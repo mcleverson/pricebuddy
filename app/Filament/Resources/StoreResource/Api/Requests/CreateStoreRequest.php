@@ -48,7 +48,7 @@ class CreateStoreRequest extends FormRequest
 
     public static function getStrategyRules(): array
     {
-        return collect(['image', 'price', 'title'])
+        $rules = collect(['image', 'price', 'title'])
             ->mapWithKeys(fn ($strategy) => [
                 "scrape_strategy.{$strategy}.type" => 'required|in:'.implode(',', ScraperStrategyType::values()),
                 // Conditional on the type: schema_org takes no value, everything else
@@ -59,5 +59,12 @@ class CreateStoreRequest extends FormRequest
                 "scrape_strategy.{$strategy}.append" => 'nullable|string',
             ])
             ->toArray();
+
+        $rules["scrape_strategy.original_price.type"] = 'nullable|in:'.implode(',', ScraperStrategyType::values());
+        $rules["scrape_strategy.original_price.value"] = [new ScrapeStrategyValue];
+        $rules["scrape_strategy.original_price.prepend"] = 'nullable|string';
+        $rules["scrape_strategy.original_price.append"] = 'nullable|string';
+
+        return $rules;
     }
 }

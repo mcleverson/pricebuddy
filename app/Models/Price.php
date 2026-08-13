@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\HasOneThrough;
  * @property ?Url $url
  * @property ?Store $store
  * @property ?float $price
+ * @property ?float $original_price
  * @property ?float $unit_price
  * @property float $price_factor
  * @property Carbon $created_at

@@ -4,6 +4,7 @@
 
     $fields = [
         'title' => 'Title',
+        'original_price' => 'Original Price',
         'price' => 'Price',
         'currency' => 'Currency',
         'image' => 'Image',

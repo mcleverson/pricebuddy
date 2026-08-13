@@ -89,6 +89,7 @@ class ScrapeUrl
         'title',
         'description',
         'price',
+        'original_price',
         'image',
         'availability',
     ];

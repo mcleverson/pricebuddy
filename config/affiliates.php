@@ -16,7 +16,7 @@ return [
     'sites' => [
         'amazon' => [
             'query_params' => [
-                'tag' => env('AFFILIATE_CODE_AMAZON_US', 'pricebuddy07-20'),
+                'tag' => env('AFFILIATE_CODE_AMAZON_US', 'achoubarat0a2-20'),
             ],
             'domains' => [
                 'amazon.com',
@@ -26,7 +26,6 @@ return [
                 'amazon.fr',
                 'amazon.it',
                 'amazon.es',
-                'amazon.com.br',
                 'amazon.cn',
                 'amazon.in',
                 'amazon.co.jp',
@@ -43,12 +42,21 @@ return [
 
         'amazon_au' => [
             'query_params' => [
-                'tag' => env('AFFILIATE_CODE_AMAZON_AU', 'pricebuddy-22'),
+                'tag' => env('AFFILIATE_CODE_AMAZON_AU', 'achoubarat0a2-22'),
             ],
             'domains' => [
                 'amazon.com.au',
             ],
         ],
+
+        'amazon_br' => [
+            'query_params' => [
+                'tag' => env('AFFILIATE_CODE_AMAZON_BR', 'achoubarat0a2-22'),
+            ],
+            'domains' => [
+                'amazon.com.br',
+            ],
+    ],
 
         'ebay' => [
             'query_params' => [

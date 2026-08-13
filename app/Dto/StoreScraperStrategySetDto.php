@@ -15,6 +15,7 @@ class StoreScraperStrategySetDto implements Arrayable, JsonSerializable
     public function __construct(
         public ?StandardStrategyDto $title = null,
         public ?StandardStrategyDto $price = null,
+        public ?StandardStrategyDto $original_price = null,
         public ?StandardStrategyDto $image = null,
         public ?StandardStrategyDto $description = null,
         public ?AvailabilityStrategyDto $availability = null,
@@ -30,6 +31,7 @@ class StoreScraperStrategySetDto implements Arrayable, JsonSerializable
         return new self(
             title: StandardStrategyDto::fromArray(self::slot($data, 'title')),
             price: StandardStrategyDto::fromArray(self::slot($data, 'price')),
+            original_price: StandardStrategyDto::fromArray(self::slot($data, 'original_price')),
             image: StandardStrategyDto::fromArray(self::slot($data, 'image')),
             description: StandardStrategyDto::fromArray(self::slot($data, 'description')),
             availability: AvailabilityStrategyDto::fromArray(self::slot($data, 'availability')),
@@ -52,7 +54,7 @@ class StoreScraperStrategySetDto implements Arrayable, JsonSerializable
     {
         $out = [];
 
-        foreach (['title', 'price', 'image', 'description', 'availability'] as $key) {
+        foreach (['title', 'price', 'original_price', 'image', 'description', 'availability'] as $key) {
             if ($this->{$key} !== null) {
                 $out[$key] = $this->{$key}->toArray();
             }

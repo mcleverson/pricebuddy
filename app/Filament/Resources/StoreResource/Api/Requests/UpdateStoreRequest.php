@@ -44,6 +44,8 @@ class UpdateStoreRequest extends FormRequest
             'scrape_strategy.image.value' => [new ScrapeStrategyValue],
             'scrape_strategy.price.type' => 'sometimes|in:'.implode(',', ScraperStrategyType::values()),
             'scrape_strategy.price.value' => [new ScrapeStrategyValue],
+            'scrape_strategy.original_price.type' => 'sometimes|in:'.implode(',', ScraperStrategyType::values()),
+            'scrape_strategy.original_price.value' => [new ScrapeStrategyValue],
             'scrape_strategy.title.type' => 'sometimes|in:'.implode(',', ScraperStrategyType::values()),
             'scrape_strategy.title.value' => [new ScrapeStrategyValue],
             'notes' => 'sometimes|string',

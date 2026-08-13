@@ -84,6 +84,9 @@ class StoreResource extends Resource
                     Section::make('Title strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('title', self::DEFAULT_SELECTORS['title']))->columns(2),
                     ])->description('How to get the product title'),
+                    Section::make('Original price strategy')->schema([
+                        Forms\Components\Group::make(self::makeStrategyInput('original_price', required: false))->columns(2),
+                    ])->description('How to get the original product price'),
                     Section::make('Price strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('price', self::DEFAULT_SELECTORS['price']))->columns(2),
                     ])->description('How to get the product price'),

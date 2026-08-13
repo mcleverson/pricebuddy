@@ -481,8 +481,14 @@ class Url extends Model
         $priceFloat = CurrencyHelper::toFloat($price, locale: $this->store?->locale, iso: $this->store?->currency);
         $priceFactor = $this->price_factor ?: 1;
 
+        $originalPrice = data_get($scrapeResult, 'original_price');
+        $originalPriceFloat = ($originalPrice !== null && $originalPrice !== '')
+            ? CurrencyHelper::toFloat($originalPrice, locale: $this->store?->locale, iso: $this->store?->currency)
+            : null;
+
         return $this->prices()->create([
             'price' => $priceFloat,
+            'original_price' => $originalPriceFloat,
             'unit_price' => $priceFloat / $priceFactor,
             'price_factor' => $priceFactor,
             'store_id' => $this->store_id,
