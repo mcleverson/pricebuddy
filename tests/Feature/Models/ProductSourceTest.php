@@ -82,6 +82,23 @@ class ProductSourceTest extends TestCase
         $this->assertEquals($user->id, $source->user->id);
     }
 
+    public function test_defaults_search_driver_to_scraper()
+    {
+        $source = ProductSource::factory()->create(['settings' => []]);
+
+        $this->assertSame(ProductSource::SEARCH_DRIVER_SCRAPER, $source->searchDriver());
+    }
+
+    public function test_recognizes_mercado_livre_api_driver()
+    {
+        $source = ProductSource::factory()->create([
+            'settings' => ['search_driver' => ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API],
+        ]);
+
+        $this->assertTrue($source->isMercadoLivreApi());
+        $this->assertSame(ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API, $source->searchDriver());
+    }
+
     public function test_allows_null_store_id_for_deals_site()
     {
         $source = ProductSource::factory()->create([

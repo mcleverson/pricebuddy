@@ -40,9 +40,18 @@ class ProductSourceResource extends Resource
                         ->required()
                         ->hintIcon(Icons::Help->value, 'The name of the source, e.g. Deals-r-us, Amazon, etc.')
                         ->maxLength(255),
+                    Forms\Components\Select::make('settings.search_driver')
+                        ->label('Search method')
+                        ->options([
+                            ProductSource::SEARCH_DRIVER_SCRAPER => 'Web scraping',
+                            ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API => 'Mercado Livre API',
+                        ])
+                        ->default(ProductSource::SEARCH_DRIVER_SCRAPER)
+                        ->live()
+                        ->required(),
                     Forms\Components\TextInput::make('search_url')
                         ->required()
-                        ->rules([new ContainsSearchTermPlaceholder])
+                        ->rules(fn (Get $get) => self::isScraperDriver($get) ? [new ContainsSearchTermPlaceholder] : [])
                         ->hintIcon(Icons::Help->value, 'The URL to search for products, substitute :search_term for the search term'),
                     Forms\Components\Select::make('type')
                         ->options(ProductSourceType::class)
@@ -70,13 +79,13 @@ class ProductSourceResource extends Resource
 
                 Forms\Components\Group::make([
                     Forms\Components\Section::make('Search result item strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('list_container'))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('list_container', required: fn (Get $get) => self::isScraperDriver($get)))->columns(2),
                     ])->description('Wrapper for a single search result'),
                     Forms\Components\Section::make('Product title')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('product_title'))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('product_title', required: fn (Get $get) => self::isScraperDriver($get)))->columns(2),
                     ])->description('Title within the search result item'),
                     Forms\Components\Section::make('Product url')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('product_url'))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('product_url', required: fn (Get $get) => self::isScraperDriver($get)))->columns(2),
                         Forms\Components\Toggle::make('product_url.url_decode')
                             ->label('Decode URL')
                             ->columns(2)
@@ -86,9 +95,13 @@ class ProductSourceResource extends Resource
                 ])
                     ->columnSpanFull()
                     ->label('Extraction strategy')
-                    ->statePath('extraction_strategy'),
+                    ->statePath('extraction_strategy')
+                    ->hidden(fn (Get $get) => ! self::isScraperDriver($get)),
 
-                self::getScraperSettings(),
+                Forms\Components\Group::make([
+                    self::getScraperSettings(),
+                ])
+                    ->hidden(fn (Get $get) => ! self::isScraperDriver($get)),
 
                 Forms\Components\Section::make('Notes')->schema([
                     Forms\Components\RichEditor::make('notes')
@@ -160,5 +173,10 @@ class ProductSourceResource extends Resource
             'edit' => Pages\EditProductSource::route('/{record}/edit'),
             'search' => Pages\SearchProductSource::route('/{record}/search/{search?}'),
         ];
+    }
+
+    protected static function isScraperDriver(Get $get): bool
+    {
+        return $get('settings.search_driver') !== ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API;
     }
 }

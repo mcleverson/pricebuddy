@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\ProductSourceStatus;
 use App\Enums\ProductSourceType;
 use App\Enums\ScraperService;
+use App\Services\MercadoLivreProductSourceSearchService;
 use App\Services\ProductSourceSearchService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
@@ -112,8 +113,26 @@ class ProductSource extends Model
      * Helpers.
      **************************************************/
 
-    public function getSearchService(): ProductSourceSearchService
+    public const string SEARCH_DRIVER_SCRAPER = 'scraper';
+
+    public const string SEARCH_DRIVER_MERCADO_LIVRE_API = 'mercado_livre_api';
+
+    public function searchDriver(): string
     {
+        return data_get($this->settings, 'search_driver', self::SEARCH_DRIVER_SCRAPER);
+    }
+
+    public function isMercadoLivreApi(): bool
+    {
+        return $this->searchDriver() === self::SEARCH_DRIVER_MERCADO_LIVRE_API;
+    }
+
+    public function getSearchService(): ProductSourceSearchService|MercadoLivreProductSourceSearchService
+    {
+        if ($this->isMercadoLivreApi()) {
+            return MercadoLivreProductSourceSearchService::new($this);
+        }
+
         return ProductSourceSearchService::new($this);
     }
 
@@ -125,6 +144,15 @@ class ProductSource extends Model
     public function searchDebugData(string $query, int $itemsCount = 5): array
     {
         $service = $this->getSearchService();
+
+        if ($this->isMercadoLivreApi()) {
+            return [
+                'html' => null,
+                'items' => $service->search($query)->take($itemsCount)->toArray(),
+                'source' => $this->name,
+                'id' => $this->getKey(),
+            ];
+        }
 
         return [
             'html' => $service->getHtml($query),

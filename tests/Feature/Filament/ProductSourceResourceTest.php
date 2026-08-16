@@ -113,6 +113,48 @@ class ProductSourceResourceTest extends TestCase
         ]);
     }
 
+    public function test_can_create_mercado_livre_api_product_source()
+    {
+        $this->actingAs($this->user);
+        $store = Store::factory()->create();
+
+        $newData = [
+            'name' => 'Mercado Livre API',
+            'type' => ProductSourceType::OnlineStore->value,
+            'store_id' => $store->id,
+            'status' => ProductSourceStatus::Active->value,
+            'settings' => [
+                'search_driver' => ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API,
+            ],
+            'search_url' => 'https://api.mercadolibre.com/products/search',
+            'extraction_strategy' => [
+                'list_container' => [
+                    'type' => 'selector',
+                    'value' => null,
+                ],
+                'product_title' => [
+                    'type' => 'selector',
+                    'value' => null,
+                ],
+                'product_url' => [
+                    'type' => 'selector',
+                    'value' => null,
+                ],
+            ],
+        ];
+
+        Livewire::test(ProductSourceResource\Pages\CreateProductSource::class)
+            ->fillForm($newData)
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $this->assertDatabaseHas('product_sources', [
+            'name' => 'Mercado Livre API',
+            'type' => ProductSourceType::OnlineStore->value,
+            'store_id' => $store->id,
+        ]);
+    }
+
     public function test_user_id_is_populated_when_creating_product_source()
     {
         $this->actingAs($this->user);

@@ -39,4 +39,9 @@ return [
         'token' => env('PUSHOVER_APP_TOKEN'),
     ],
 
+    'mercado_livre' => [
+        'base_url' => env('MERCADO_LIVRE_API_URL', 'https://api.mercadolibre.com'),
+        'access_token' => env('MERCADO_LIVRE_ACCESS_TOKEN'),
+    ],
+
 ];
