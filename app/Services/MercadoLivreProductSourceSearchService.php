@@ -9,6 +9,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Psr\Log\LoggerInterface;
+use RuntimeException;
 use Throwable;
 
 class MercadoLivreProductSourceSearchService
@@ -19,12 +20,13 @@ class MercadoLivreProductSourceSearchService
 
     protected string $baseUrl;
 
-    public function __construct(protected ProductSource $source)
-    {
+    public function __construct(
+        protected ProductSource $source,
+        protected MercadoLivreAuthService $authService,
+    ) {
         // @phpstan-ignore-next-line - withContext is valid.
         $this->logger = Log::channel('db')->withContext(['source' => $source->getKey()]);
         $this->baseUrl = rtrim((string) config('services.mercado_livre.base_url', 'https://api.mercadolibre.com'), '/');
-        $this->accessToken = config('services.mercado_livre.access_token');
     }
 
     public static function new(ProductSource $source): self
@@ -34,9 +36,12 @@ class MercadoLivreProductSourceSearchService
 
     public function search(string $query): Collection
     {
-        if (empty($this->accessToken)) {
-            $this->logger->warning('Mercado Livre access token is missing, skipping search', [
+        try {
+            $this->accessToken = $this->authService->getAccessToken();
+        } catch (RuntimeException $e) {
+            $this->logger->warning('Mercado Livre access token is not available, skipping search', [
                 'source' => $this->source->getKey(),
+                'error' => $e->getMessage(),
             ]);
 
             return collect();
@@ -133,10 +138,10 @@ class MercadoLivreProductSourceSearchService
                     ->get("{$this->baseUrl}/products/{$productId}/items")
                     ->throw();
 
-                $items = $response->json('items', []);
+                $itemId = data_get($item, 'id');
 
                 foreach ($items as $item) {
-                    $itemId = data_get($item, 'id');
+                    $itemId = data_get($item, 'item_id');
 
                     if (is_string($itemId) && $itemId !== '') {
                         $itemIds->push($itemId);

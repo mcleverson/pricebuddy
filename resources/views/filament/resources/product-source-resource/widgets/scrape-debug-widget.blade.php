@@ -21,14 +21,22 @@
                     <div>
                         @foreach($scrape as $key => $val)
                             <div class="mb-4" x-data="{ expanded: false }">
-                                @if ($key === 'html')
-                                    <h3 class="font-bold mb-2">Result page HTML response</h3>
+                            @if ($key === 'html')
+                                <h3 class="font-bold mb-2">Result page HTML response</h3>
+
+                                @if (is_string($val) && $val !== '')
                                     <div :class="expanded ? 'max-h-none overflow-y-visible' : 'max-h-[300px] overflow-y-hidden'">
                                         {!! CodeHelper::formatHtml($val) !!}
                                     </div>
-                                <x-filament::button @click="expanded = !expanded" color="gray" class="w-full py-2">
-                                    Show entire response
-                                </x-filament::button>
+
+                                    <x-filament::button @click="expanded = !expanded" color="gray" class="w-full py-2">
+                                        Show entire response
+                                    </x-filament::button>
+                                @else
+                                    <p class="text-sm text-gray-500">
+                                        No HTML response available for this source.
+                                    </p>
+                                @endif
                                 @elseif (is_array($val))
                                     <h3 class="font-bold mb-2">First few results</h3>
                                     @foreach($val as $result)

@@ -30,6 +30,8 @@ class AppSettings extends Settings
 
     public array $integrated_services = [];
 
+    public array $mercado_livre = [];
+
     public array $default_locale_settings = [];
 
     public static function new(): self

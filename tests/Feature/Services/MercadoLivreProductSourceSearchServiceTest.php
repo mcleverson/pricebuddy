@@ -3,8 +3,10 @@
 namespace Tests\Feature\Services;
 
 use App\Models\ProductSource;
+use App\Services\Helpers\SettingsHelper;
 use App\Services\MercadoLivreProductSourceSearchService;
 use App\Services\ProductSourceSearchService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -17,7 +19,11 @@ class MercadoLivreProductSourceSearchServiceTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('services.mercado_livre.access_token', 'test-access-token');
+        SettingsHelper::setSetting('mercado_livre', [
+            'access_token' => 'test-access-token',
+            'refresh_token' => 'test-refresh-token',
+            'expires_at' => Carbon::now()->addHour()->toDateTimeString(),
+        ]);
     }
 
     public function test_scraper_source_uses_product_source_search_service(): void
@@ -55,7 +61,7 @@ class MercadoLivreProductSourceSearchServiceTest extends TestCase
         $service->search('Nike Mercurial');
 
         Http::assertSent(function ($request) {
-            return $request->url() === 'https://api.mercadolibre.com/products/search?status=active&site_id=MLB&q=Nike+Mercurial&limit=10';
+            return $request->url() === 'https://api.mercadolibre.com/products/search?status=active&site_id=MLB&q=Nike%20Mercurial&limit=10';
         });
     }
 
@@ -140,7 +146,10 @@ class MercadoLivreProductSourceSearchServiceTest extends TestCase
                 return false;
             }
 
-            $ids = explode(',', $request->data('ids') ?? '');
+            $queryString = parse_url($request->url(), PHP_URL_QUERY) ?? '';
+            parse_str($queryString, $query);
+
+            $ids = explode(',', $query['ids'] ?? '');
 
             return count($ids) === 20;
         });
@@ -216,7 +225,11 @@ class MercadoLivreProductSourceSearchServiceTest extends TestCase
 
     public function test_returns_empty_collection_when_access_token_is_missing(): void
     {
-        config()->set('services.mercado_livre.access_token', null);
+        SettingsHelper::setSetting('mercado_livre', [
+            'access_token' => null,
+            'refresh_token' => null,
+            'expires_at' => null,
+        ]);
 
         Http::fake([]);
 
