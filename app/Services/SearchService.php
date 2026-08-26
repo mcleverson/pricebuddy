@@ -282,6 +282,8 @@ class SearchService
                 'url' => data_get($result, 'url'),
                 'snippet' => data_get($result, 'content'),
                 'thumbnail' => data_get($result, 'thumbnail'),
+                'image' => data_get($result, 'image') ?? data_get($result, 'thumbnail'),
+                'price' => data_get($result, 'price'),
                 'domain' => parse_url(data_get($result, 'url'), PHP_URL_HOST),
                 'relevance' => $idx,
             ];
@@ -325,12 +327,29 @@ class SearchService
 
         foreach ($this->results as $result) {
             $logArgs = collect($result)->only(['title', 'url', 'domain'])->all();
+
+            // Skip scraping when the result already has all required data.
+            if (! empty($result['url']) && ! empty($result['title']) && ! empty($result['price']) && ! empty($result['image'] ?? $result['thumbnail'])) {
+                $hydratedResults->push($result);
+                $this->persistUrlResearchResult($result);
+
+                $pricedResultsCount++;
+
+                if ($pricedResultsCount >= $maxPricedResults) {
+                    $this->log(__('Stopping search after finding :count priced results', ['count' => $pricedResultsCount]));
+
+                    break;
+                }
+
+                continue;
+            }
+
             $cachedResult = $existing->get($result['url']);
 
             if ($cachedResult) {
                 $this->log(__('Using cache ":title" (:domain)', $logArgs), ['subtitle' => $result['url'], 'icon' => Icons::Database->value]);
 
-                $result = array_merge($result, Arr::only($cachedResult->toArray(), [
+                $result = $this->mergeHydratedData($result, Arr::only($cachedResult->toArray(), [
                     'html', 'image', 'price', 'store_id', 'strategies', 'execution_time',
                 ]));
             } else {
@@ -338,7 +357,7 @@ class SearchService
                 $this->log(__('Analyzing ":title" (:domain)', $logArgs), ['subtitle' => $result['url']]);
 
                 try {
-                    $result = array_merge($result, $this->getHydratedResultData($result));
+                    $result = $this->mergeHydratedData($result, $this->getHydratedResultData($result));
 
                     if (! empty($result['price'])) {
                         $this->replaceLastLogEntry(__('Price found ":title" (:domain)', $logArgs), ['icon' => Icons::Success->value]);
@@ -398,6 +417,23 @@ class SearchService
             'is_product_page' => $dto->getIsProductPage()->value,
             'html' => $dto->getHtml(),
         ];
+    }
+
+    /**
+     * Merge hydrated (cached or scraped) data into a result without
+     * overwriting valid values already present on the result.
+     */
+    protected function mergeHydratedData(array $result, array $hydrated): array
+    {
+        foreach ($hydrated as $key => $value) {
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $result[$key] = $value;
+        }
+
+        return $result;
     }
 
     protected function persistUrlResearchResult(array $result): void

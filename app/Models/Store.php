@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Casts\StoreScraperStrategySetCast;
 use App\Dto\StoreScraperStrategySetDto;
+use App\Enums\AccessMode;
 use App\Enums\ScraperService;
 use App\Services\Helpers\CurrencyHelper;
 use Database\Factories\StoreFactory;
@@ -24,6 +25,8 @@ use Spatie\Sluggable\SlugOptions;
 
 /**
  * @property string $name
+ * @property ?string $marketplace_id
+ * @property ?AccessMode $access_mode
  * @property string $initials
  * @property array $domains
  * @property HtmlString $domains_html
@@ -50,6 +53,8 @@ class Store extends Model
 
     protected $fillable = [
         'name',
+        'marketplace_id',
+        'access_mode',
         'initials',
         'domains',
         'scrape_strategy',
@@ -65,6 +70,7 @@ class Store extends Model
             'domains' => 'array',
             'scrape_strategy' => StoreScraperStrategySetCast::class,
             'settings' => 'array',
+            'access_mode' => AccessMode::class,
         ];
     }
 

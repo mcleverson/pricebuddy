@@ -42,6 +42,10 @@ php artisan route:cache
 php artisan event:cache
 php artisan buddy:regenerate-price-cache
 
+# A container image can retain Apache's runtime PID file. Remove it before
+# supervisord starts so Apache does not mistake another process for itself.
+rm -f /var/run/apache2/apache2.pid
+
 # Install xdebug if running in Lando environment
 if [ ! -z "${LANDO_INFO}" ]; then
     pecl install xdebug && docker-php-ext-enable xdebug

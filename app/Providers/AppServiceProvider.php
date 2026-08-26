@@ -12,6 +12,8 @@ use App\Policies\UserPolicy;
 use App\Services\Helpers\NotificationsHelper;
 use App\Services\Helpers\QueueHelper;
 use App\Services\Helpers\SettingsHelper;
+use App\Services\Scraping\Proxy\ProxyPool;
+use App\Services\Scraping\Proxy\StaticProxyProvider;
 use Filament\Facades\Filament;
 use Filament\Navigation\MenuItem;
 use Filament\Support\Facades\FilamentView;
@@ -25,7 +27,10 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        $this->app->singleton(StaticProxyProvider::class);
+        $this->app->singleton(ProxyPool::class, fn ($app) => new ProxyPool(
+            $app->make(StaticProxyProvider::class),
+        ));
     }
 
     public function boot(): void

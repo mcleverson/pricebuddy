@@ -4,11 +4,11 @@ namespace App\Services;
 
 use App\Dto\AvailabilityStrategyDto;
 use App\Dto\StandardStrategyDto;
-use App\Enums\ScraperService;
 use App\Enums\ScraperStrategyType;
 use App\Enums\StockStatus;
 use App\Models\Store;
 use App\Services\Helpers\SettingsHelper;
+use App\Services\Scraping\ScrapingGateway;
 use App\Settings\AppSettings;
 use Exception;
 use Filament\Notifications\Notification;
@@ -16,8 +16,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Support\Uri;
 use Jez500\WebScraperForLaravel\Exceptions\DomSelectorException;
-use Jez500\WebScraperForLaravel\Facades\WebScraper;
-use Jez500\WebScraperForLaravel\WebScraperApi;
 use Jez500\WebScraperForLaravel\WebScraperInterface;
 use Psr\Log\LoggerInterface;
 
@@ -72,8 +70,6 @@ class ScrapeUrl
      * page.
      */
     protected const string NOT_FOUND_BODY_PATTERN = '/class=["\'][^"\']*\btemplate-404\b|data-page-type=["\']404["\']|"pageType"\s*:\s*"404"|rel=["\']canonical["\'][^>]*href=["\'][^"\']*\/404\/?["\']|href=["\'][^"\']*\/404\/?["\'][^>]*rel=["\']canonical["\']/i';
-
-    protected WebScraperInterface $webScraper;
 
     protected LoggerInterface $logger;
 
@@ -134,18 +130,6 @@ class ScrapeUrl
     public function setScraper(string $scraper): self
     {
         $this->scraperService = $scraper;
-        $scraper = WebScraper::make($this->scraperService)
-            ->setConnectTimeout($this->getConnectTimeout())
-            ->setRequestTimeout($this->getRequestTimeout());
-
-        if ($this->scraperService === ScraperService::Api->value) {
-            /** @var WebScraperApi $scraper */
-            $scraper->setScraperApiBaseUrl(
-                config('price_buddy.scraper_api_url', 'http://scraper:3000')
-            );
-        }
-
-        $this->webScraper = $scraper;
 
         return $this;
     }
@@ -217,28 +201,39 @@ class ScrapeUrl
         ];
 
         try {
-            $this->setScraper($store->scraper_service);
+            $fetch = resolve(ScrapingGateway::class)->fetch(
+                url: $this->url,
+                scraperService: $store->scraper_service,
+                storeOptions: $store->scraper_options,
+                cookies: $store->cookies,
+                useCache: $useCache,
+                cacheTtlMinutes: AppSettings::new()->scrape_cache_ttl,
+                connectTimeout: $this->getConnectTimeout(),
+                requestTimeout: $this->getRequestTimeout(),
+            );
 
-            $scraper = $this->webScraper->from($this->url)
-                ->setCacheMinsTtl(AppSettings::new()->scrape_cache_ttl)
-                ->setUseCache($useCache)
-                ->setOptions($store->scraper_options);
-
-            if ($store->cookies) {
-                $scraper->setCookies($store->cookies);
+            $output['scrape_meta'] = $fetch->meta;
+            if ($fetch->page !== null) {
+                $output['body'] = $fetch->page->getBody();
             }
 
-            $page = $scraper->get();
+            $errors = $fetch->errors;
+            if ($fetch->blockedReason !== null) {
+                $errors[] = 'blocked: '.$fetch->blockedReason;
+            }
 
-            if ($errors = $scraper->getErrors()) {
+            if (! $fetch->successful()) {
                 $this->errorLog('Error scraping URL', [
                     'store_id' => $store->getKey(),
                     'errors' => $errors,
+                    'scrape_meta' => $fetch->meta,
                 ]);
                 $this->errorNotification('Error scraping URL check logs');
 
                 return $output;
             }
+
+            $page = $fetch->page;
 
             $strategy = $store->scrape_strategy;
 
@@ -250,7 +245,7 @@ class ScrapeUrl
             }
 
             $output['body'] = $page->getBody();
-            $output['errors'] = $scraper->getErrors();
+            $output['errors'] = $errors;
             $output = $this->applyNotFoundPageGuards($output);
         } catch (Exception $e) {
             $this->errorLog('Error scraping URL', [

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Enums\AccessMode;
 use App\Enums\Icons;
 use App\Enums\ProductSourceStatus;
 use App\Enums\ProductSourceType;
@@ -9,6 +10,7 @@ use App\Filament\Concerns\HasScraperTrait;
 use App\Filament\Resources\ProductSourceResource\Pages;
 use App\Models\ProductSource;
 use App\Rules\ContainsSearchTermPlaceholder;
+use App\Services\ProductData\MarketplaceRegistry;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Forms\Get;
@@ -40,19 +42,21 @@ class ProductSourceResource extends Resource
                         ->required()
                         ->hintIcon(Icons::Help->value, 'The name of the source, e.g. Deals-r-us, Amazon, etc.')
                         ->maxLength(255),
-                    Forms\Components\Select::make('settings.search_driver')
-                        ->label('Search method')
-                        ->options([
-                            ProductSource::SEARCH_DRIVER_SCRAPER => 'Web scraping',
-                            ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API => 'Mercado Livre API',
-                        ])
-                        ->default(ProductSource::SEARCH_DRIVER_SCRAPER)
-                        ->live()
-                        ->required(),
                     Forms\Components\TextInput::make('search_url')
                         ->required()
-                        ->rules(fn (Get $get) => self::isScraperDriver($get) ? [new ContainsSearchTermPlaceholder] : [])
+                        ->rules([new ContainsSearchTermPlaceholder])
                         ->hintIcon(Icons::Help->value, 'The URL to search for products, substitute :search_term for the search term'),
+                    Forms\Components\Select::make('marketplace_id')
+                        ->label('Marketplace')
+                        ->options(fn (): array => app(MarketplaceRegistry::class)->options())
+                        ->placeholder('Auto-detect from search URL')
+                        ->hintIcon(Icons::Help->value, 'Optional explicit marketplace identity used to select an API provider'),
+                    Forms\Components\Select::make('access_mode')
+                        ->label('Access mode')
+                        ->options(AccessMode::class)
+                        ->default(AccessMode::Auto->value)
+                        ->selectablePlaceholder(false)
+                        ->hintIcon(Icons::Help->value, 'Auto uses a configured API when the operation is supported, otherwise scraping'),
                     Forms\Components\Select::make('type')
                         ->options(ProductSourceType::class)
                         ->hintIcon(Icons::Help->value, 'A deals site aggregates products from multiple sites, an online store sells products')
@@ -79,29 +83,33 @@ class ProductSourceResource extends Resource
 
                 Forms\Components\Group::make([
                     Forms\Components\Section::make('Search result item strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('list_container', required: fn (Get $get) => self::isScraperDriver($get)))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('list_container', required: true))->columns(2),
                     ])->description('Wrapper for a single search result'),
                     Forms\Components\Section::make('Product title')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('product_title', required: fn (Get $get) => self::isScraperDriver($get)))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('product_title', required: true))->columns(2),
                     ])->description('Title within the search result item'),
                     Forms\Components\Section::make('Product url')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('product_url', required: fn (Get $get) => self::isScraperDriver($get)))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('product_url', required: true))->columns(2),
                         Forms\Components\Toggle::make('product_url.url_decode')
                             ->label('Decode URL')
                             ->columns(2)
                             ->hintIcon(Icons::Help->value, 'Useful if the url is extracted url parameters')
                             ->default(false),
                     ])->description('Product URL within the search result item'),
+                    Forms\Components\Section::make('Product price')->schema([
+                        Forms\Components\Group::make(self::makeStrategyInput('product_price', required: false))->columns(2),
+                    ])->description('Optional price within the search result item'),
+                    Forms\Components\Section::make('Product image')->schema([
+                        Forms\Components\Group::make(self::makeStrategyInput('product_image', required: false))->columns(2),
+                    ])->description('Optional image within the search result item'),
                 ])
                     ->columnSpanFull()
                     ->label('Extraction strategy')
-                    ->statePath('extraction_strategy')
-                    ->hidden(fn (Get $get) => ! self::isScraperDriver($get)),
+                    ->statePath('extraction_strategy'),
 
                 Forms\Components\Group::make([
                     self::getScraperSettings(),
-                ])
-                    ->hidden(fn (Get $get) => ! self::isScraperDriver($get)),
+                ]),
 
                 Forms\Components\Section::make('Notes')->schema([
                     Forms\Components\RichEditor::make('notes')
@@ -173,10 +181,5 @@ class ProductSourceResource extends Resource
             'edit' => Pages\EditProductSource::route('/{record}/edit'),
             'search' => Pages\SearchProductSource::route('/{record}/search/{search?}'),
         ];
-    }
-
-    protected static function isScraperDriver(Get $get): bool
-    {
-        return $get('settings.search_driver') !== ProductSource::SEARCH_DRIVER_MERCADO_LIVRE_API;
     }
 }

@@ -6,10 +6,10 @@ use App\Dto\StandardStrategyDto;
 use App\Enums\ScraperService;
 use App\Models\Store;
 use App\Services\ExtractionBudget;
+use App\Services\Scraping\ScrapingGateway;
 use App\Services\StrategyExtractor;
 use Illuminate\Support\Str;
 use Jez500\WebScraperForLaravel\Facades\WebScraper;
-use Jez500\WebScraperForLaravel\WebScraperApi;
 use Jez500\WebScraperForLaravel\WebScraperInterface;
 use RuntimeException;
 use Throwable;
@@ -77,21 +77,20 @@ class HealingContext
 
         $service = $rendered ? ScraperService::Api->value : ScraperService::Http->value;
 
-        $scraper = WebScraper::make($service)->setUrl($this->url);
+        $result = resolve(ScrapingGateway::class)->fetch(
+            url: $this->url,
+            scraperService: $service,
+            storeOptions: $this->store->scraper_options,
+            cookies: $this->store->cookies,
+            connectTimeout: $timeout ?? 30,
+            requestTimeout: $timeout ?? 30,
+        );
 
-        if ($timeout !== null) {
-            $scraper->setConnectTimeout($timeout)->setRequestTimeout($timeout);
+        if (! $result->successful()) {
+            throw new RuntimeException('Scraper could not fetch a valid page for '.$this->url);
         }
 
-        if ($scraper instanceof WebScraperApi) {
-            $scraper->setScraperApiBaseUrl(config('price_buddy.scraper_api_url', 'http://scraper:3000'));
-        }
-
-        if (filled($this->store->cookies)) {
-            $scraper->setCookies($this->store->cookies);
-        }
-
-        $this->html = $scraper->setOptions($this->store->scraper_options)->get()->getBody();
+        $this->html = $result->page?->getBody();
 
         if ($rendered) {
             $this->usedBrowser = true;

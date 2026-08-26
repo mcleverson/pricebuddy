@@ -40,17 +40,21 @@ class AddSearchResultUrlBulkAction extends BulkAction
             $product = $this->product;
 
             $this->process(static function (Collection $records) use ($searchQuery, &$product) {
-                $image = null;
-
                 if ($records->isEmpty()) {
                     return;
                 }
+
+                $titleResult = $records->first(fn (UrlResearch $result) => ! empty($result->title));
+                $imageResult = $records->first(fn (UrlResearch $result) => ! empty($result->image));
+
+                $productTitle = $titleResult?->title ?? $searchQuery;
+                $image = $imageResult?->image ?? null;
 
                 if (! $product) {
                     try {
                         /** @var Product $product */
                         $product = call_user_func(new CreateProductAction, [
-                            'title' => $searchQuery,
+                            'title' => $productTitle,
                         ]);
                     } catch (Exception $e) {
                         logger()->error('Failed to create product from search: '.$e->getMessage(), [
@@ -62,18 +66,10 @@ class AddSearchResultUrlBulkAction extends BulkAction
                 }
 
                 /** @phpstan-ignore-next-line */
-                $records->each(function (UrlResearch $result) use ($product, &$image) {
+                $records->each(function (UrlResearch $result) use ($product) {
                     try {
                         // Create url and pass the product id and user id.
-                        $url = Url::createFromUrl($result->url, $product->getKey(), auth()->id(), true);
-
-                        if ($url) {
-                            // Set the product image to the first url that has an image.
-                            $resultImage = data_get($result->toArray(), 'image');
-                            if (! empty($resultImage) && empty($image)) {
-                                $image = $resultImage;
-                            }
-                        }
+                        Url::createFromUrl($result->url, $product->getKey(), auth()->id(), true);
                     } catch (Exception $e) {
                         logger()->warning('Failed to create URL: '.$e->getMessage(), [
                             'url' => $result->url,

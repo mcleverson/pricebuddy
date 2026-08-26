@@ -6,7 +6,9 @@ use App\Enums\IsProductPage as IsProductPageEnum;
 use App\Models\Store;
 use App\Services\AutoCreateStore;
 use App\Services\Helpers\CurrencyHelper;
+use App\Services\ProductData\ProductDataGateway;
 use App\Services\ScrapeUrl;
+use App\Services\Scraping\ScrapingGateway;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Uri;
 use Jez500\WebScraperForLaravel\Facades\WebScraper;
@@ -112,7 +114,14 @@ class ProductResearchUrlDto
             return $this->scrapeResult;
         }
 
-        $this->scrapeResult = $this->getScrapeUrlService()->scrape();
+        $store = $this->getStore();
+        $this->scrapeResult = $store
+            ? resolve(ProductDataGateway::class)->productDetails(
+                $store,
+                $this->url,
+                fn (): array => $this->getScrapeUrlService()->scrape(),
+            )
+            : $this->getScrapeUrlService()->scrape();
 
         return $this->scrapeResult;
     }
@@ -124,10 +133,17 @@ class ProductResearchUrlDto
 
     public function getScraper(): WebScraperInterface
     {
-        return WebScraper::http()->from($this->url)
-            ->setConnectTimeout($this->httpTimeout)
-            ->setRequestTimeout($this->httpTimeout)
-            ->get();
+        $store = $this->getStore();
+        $result = resolve(ScrapingGateway::class)->fetch(
+            url: $this->url,
+            scraperService: $store->scraper_service,
+            storeOptions: $store->scraper_options,
+            cookies: $store?->cookies,
+            connectTimeout: $this->httpTimeout,
+            requestTimeout: $this->httpTimeout,
+        );
+
+        return $result->page ?? WebScraper::http()->setBody('');
     }
 
     public function hasStore(): bool

@@ -2,10 +2,10 @@
 
 namespace App\Models;
 
+use App\Enums\AccessMode;
 use App\Enums\ProductSourceStatus;
 use App\Enums\ProductSourceType;
 use App\Enums\ScraperService;
-use App\Services\MercadoLivreProductSourceSearchService;
 use App\Services\ProductSourceSearchService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
@@ -18,6 +18,9 @@ use Spatie\Sluggable\SlugOptions;
 
 /**
  * @property string $name
+ * @property ?string $marketplace_id
+ * @property ?AccessMode $access_mode
+ * @property ?Store $store
  * @property string $search_url
  * @property string $scraper_service
  * @property string $type_label
@@ -31,6 +34,8 @@ class ProductSource extends Model
 
     protected $fillable = [
         'name',
+        'marketplace_id',
+        'access_mode',
         'slug',
         'search_url',
         'type',
@@ -49,6 +54,7 @@ class ProductSource extends Model
             'status' => ProductSourceStatus::class,
             'extraction_strategy' => 'array',
             'settings' => 'array',
+            'access_mode' => AccessMode::class,
         ];
     }
 
@@ -113,26 +119,8 @@ class ProductSource extends Model
      * Helpers.
      **************************************************/
 
-    public const string SEARCH_DRIVER_SCRAPER = 'scraper';
-
-    public const string SEARCH_DRIVER_MERCADO_LIVRE_API = 'mercado_livre_api';
-
-    public function searchDriver(): string
+    public function getSearchService(): ProductSourceSearchService
     {
-        return data_get($this->settings, 'search_driver', self::SEARCH_DRIVER_SCRAPER);
-    }
-
-    public function isMercadoLivreApi(): bool
-    {
-        return $this->searchDriver() === self::SEARCH_DRIVER_MERCADO_LIVRE_API;
-    }
-
-    public function getSearchService(): ProductSourceSearchService|MercadoLivreProductSourceSearchService
-    {
-        if ($this->isMercadoLivreApi()) {
-            return MercadoLivreProductSourceSearchService::new($this);
-        }
-
         return ProductSourceSearchService::new($this);
     }
 
@@ -144,15 +132,6 @@ class ProductSource extends Model
     public function searchDebugData(string $query, int $itemsCount = 5): array
     {
         $service = $this->getSearchService();
-
-        if ($this->isMercadoLivreApi()) {
-            return [
-                'html' => null,
-                'items' => $service->search($query)->take($itemsCount)->toArray(),
-                'source' => $this->name,
-                'id' => $this->getKey(),
-            ];
-        }
 
         return [
             'html' => $service->getHtml($query),

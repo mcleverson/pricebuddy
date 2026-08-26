@@ -9,6 +9,7 @@ use App\Services\AiScrapeEnhancer;
 use App\Services\AutoCreateStore;
 use App\Services\Helpers\AffiliateHelper;
 use App\Services\Helpers\CurrencyHelper;
+use App\Services\ProductData\ProductDataGateway;
 use App\Services\ScrapeUrl;
 use Carbon\Carbon;
 use Database\Factories\UrlFactory;
@@ -304,7 +305,15 @@ class Url extends Model
 
     public function scrape(): array
     {
-        return $this->url ? ScrapeUrl::new($this->url)->scrape() : [];
+        if (! $this->url || ! $this->store) {
+            return [];
+        }
+
+        return resolve(ProductDataGateway::class)->productDetails(
+            $this->store,
+            $this->url,
+            fn (): array => ScrapeUrl::new($this->url)->scrape(),
+        );
     }
 
     public function getAvailabilityStatus(): ?StockStatus
@@ -402,14 +411,23 @@ class Url extends Model
      */
     protected static function scrapeAndResolveStore(string $url, bool $createStore = true): array
     {
-        if ($createStore) {
-            AutoCreateStore::createStoreFromUrl($url);
-        }
+        $store = $createStore ? AutoCreateStore::createStoreFromUrl($url) : null;
+        $store ??= ScrapeUrl::new($url)->getStore();
 
         // Suppress UI toasts on these intermediate scrapes: a first attempt may legitimately
         // fail (e.g. bot-blocked) before AI self-healing switches to browser scraping. The
         // only user-facing feedback is the final outcome (product created, or the caller's error).
-        $scrape = ScrapeUrl::new($url)->setSendUiNotifications(false)->scrape();
+        $scrape = $store
+            ? resolve(ProductDataGateway::class)->productDetails(
+                $store,
+                $url,
+                fn (): array => ScrapeUrl::new($url)->setSendUiNotifications(false)->scrape(),
+            )
+            : ScrapeUrl::new($url)->setSendUiNotifications(false)->scrape();
+
+        if ($store) {
+            $scrape['store'] = $store;
+        }
 
         /** @var ?Store $store */
         $store = data_get($scrape, 'store');
@@ -421,7 +439,18 @@ class Url extends Model
         // repair the store config, then re-scrape once with the new config.
         if ((! $store || (! data_get($scrape, 'price') && ! $isUnavailable))
             && AiConfigHealer::new()->healStoreForUrl($url, $store, data_get($scrape, 'body')) !== null) {
-            $scrape = ScrapeUrl::new($url)->setSendUiNotifications(false)->scrape();
+            $scrape = $store
+                ? resolve(ProductDataGateway::class)->productDetails(
+                    $store,
+                    $url,
+                    fn (): array => ScrapeUrl::new($url)->setSendUiNotifications(false)->scrape(),
+                )
+                : ScrapeUrl::new($url)->setSendUiNotifications(false)->scrape();
+
+            if ($store) {
+                $scrape['store'] = $store;
+            }
+
             $store = data_get($scrape, 'store');
             $availabilityStrategy = data_get($store, 'scrape_strategy.availability');
             $isUnavailable = ScrapeUrl::resolveStockStatus($scrape, $availabilityStrategy)->isUnavailable();

@@ -39,11 +39,4 @@ return [
         'token' => env('PUSHOVER_APP_TOKEN'),
     ],
 
-    'mercado_livre' => [
-        'base_url' => env('MERCADO_LIVRE_API_URL', 'https://api.mercadolibre.com'),
-        'client_id' => env('MERCADO_LIVRE_CLIENT_ID'),
-        'client_secret' => env('MERCADO_LIVRE_CLIENT_SECRET'),
-        'redirect_uri' => env('MERCADO_LIVRE_REDIRECT_URI'),
-    ],
-
 ];

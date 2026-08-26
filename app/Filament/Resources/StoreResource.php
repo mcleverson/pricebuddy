@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Enums\AccessMode;
 use App\Enums\AiFeature;
 use App\Enums\Icons;
 use App\Enums\ScraperService;
@@ -17,6 +18,7 @@ use App\Models\Url;
 use App\Providers\Filament\AdminPanelProvider;
 use App\Rules\StoreUrl;
 use App\Services\Helpers\IntegrationHelper;
+use App\Services\ProductData\MarketplaceRegistry;
 use Filament\Forms;
 use Filament\Forms\Components\Actions;
 use Filament\Forms\Components\Actions\Action as FormAction;
@@ -79,6 +81,20 @@ class StoreResource extends Resource
                         ])->required(),
                 ])
                     ->description('What domains does this store apply to'),
+
+                Section::make('Product data access')->schema([
+                    Select::make('marketplace_id')
+                        ->label('Marketplace')
+                        ->options(fn (): array => app(MarketplaceRegistry::class)->options())
+                        ->placeholder('Auto-detect from domain')
+                        ->hintIcon(Icons::Help->value, 'Optional explicit marketplace identity used to select an API provider'),
+                    Select::make('access_mode')
+                        ->label('Access mode')
+                        ->options(AccessMode::class)
+                        ->default(AccessMode::Auto->value)
+                        ->selectablePlaceholder(false)
+                        ->hintIcon(Icons::Help->value, 'Auto uses a configured API when the operation is supported, otherwise scraping'),
+                ])->columns(2),
 
                 Forms\Components\Group::make([
                     Section::make('Title strategy')->schema([

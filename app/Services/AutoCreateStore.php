@@ -7,6 +7,7 @@ use App\Enums\ScraperService;
 use App\Enums\ScraperStrategyType;
 use App\Models\Store;
 use App\Services\Helpers\CurrencyHelper;
+use App\Services\Scraping\ScrapingGateway;
 use Closure;
 use Exception;
 use Illuminate\Support\Uri;
@@ -32,12 +33,14 @@ class AutoCreateStore
         $this->strategies = config('price_buddy.auto_create_store_strategies', []);
 
         if (empty($html)) {
-            $this->scraperService = WebScraper::make($scraper)
-                ->setConnectTimeout($timeout)
-                ->setRequestTimeout($timeout)
-                ->from($url)
-                ->get();
-            $this->html = $this->scraperService->getBody();
+            $result = resolve(ScrapingGateway::class)->fetch(
+                url: $url,
+                scraperService: $scraper,
+                connectTimeout: $timeout,
+                requestTimeout: $timeout,
+            );
+            $this->scraperService = $result->page ?? WebScraper::make($scraper)->setBody('');
+            $this->html = $result->page?->getBody() ?: '';
         } else {
             $this->scraperService = WebScraper::make($scraper)->setBody($this->html);
         }

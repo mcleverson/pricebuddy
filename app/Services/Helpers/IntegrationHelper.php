@@ -24,6 +24,15 @@ class IntegrationHelper
         return data_get(self::getSettings(), IntegratedServices::SearXng->value, []);
     }
 
+    public static function getMarketplaceSettings(string $marketplaceId): array
+    {
+        return data_get(
+            self::getSettings(),
+            IntegratedServices::Marketplaces->value.'.'.$marketplaceId,
+            [],
+        );
+    }
+
     public static function getAiSettings(): array
     {
         return data_get(self::getSettings(), IntegratedServices::Ai->value, []);
