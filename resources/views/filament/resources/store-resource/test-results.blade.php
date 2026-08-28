@@ -123,8 +123,43 @@
 
         @if (filled(data_get($scrape, 'body')))
             <div class="mt-6">
+                <div class="flex justify-end mb-2">
+                    <div x-data="{ copied: false }">
+                        <x-filament::button type="button" class="copy-to-clipboard" @click.stop.prevent="
+                            (async () => {
+                                const el = document.getElementById('raw-html-body');
+                                if (! el) return;
+                                const text = el.innerText || el.textContent || '';
+                                try {
+                                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                                        await navigator.clipboard.writeText(text);
+                                    } else {
+                                        // Fallback for older browsers
+                                        const textarea = document.createElement('textarea');
+                                        textarea.value = text;
+                                        textarea.style.position = 'fixed';
+                                        textarea.style.left = '-9999px';
+                                        document.body.appendChild(textarea);
+                                        textarea.select();
+                                        document.execCommand('copy');
+                                        textarea.remove();
+                                    }
+                                    copied = true; setTimeout(() => copied = false, 2000);
+                                } catch (e) {
+                                    // If copy fails, still show transient feedback
+                                    copied = true; setTimeout(() => copied = false, 2000);
+                                }
+                            })();
+                        ">
+                            {{-- Copy icon (document duplicate) --><svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M8 2a2 2 0 00-2 2v1H5a2 2 0 00-2 2v7a2 2 0 002 2h5a2 2 0 002-2v-1h1a2 2 0 002-2V9h-1V6a2 2 0 00-2-2H8V4a2 2 0 012-2h2V2H8z"/></svg>
+                            <span x-show="! copied">{{ __('Copy HTML') }}</span>
+                            <span x-show="copied">{{ __('Copied!') }}</span>
+                        </x-filament::button>
+                    </div>
+                </div>
+
                 <x-filament::section heading="Raw HTML body" collapsible collapsed>
-                    <code class="block whitespace-pre-wrap break-all max-h-96 overflow-auto text-xs">{{ data_get($scrape, 'body') }}</code>
+                    <pre id="raw-html-body" class="text-xs p-4 rounded bg-gray-100 dark:bg-gray-800/30 shadow-sm ring-1 ring-gray-950/5 dark:ring-white/10"><code class="block whitespace-pre-wrap break-all max-h-96 overflow-auto">{{ data_get($scrape, 'body') }}</code></pre>
                 </x-filament::section>
             </div>
         @endif
