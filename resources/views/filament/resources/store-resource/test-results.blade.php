@@ -123,9 +123,55 @@
 
         @if (filled(data_get($scrape, 'body')))
             <div class="mt-6">
+                <div class="flex justify-end mb-2">
+                    <div>
+                        <button id="copy-raw-html-btn" type="button" class="inline-flex items-center px-3 py-1.5 border rounded bg-white dark:bg-gray-800 text-sm shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M8 2a2 2 0 00-2 2v1H5a2 2 0 00-2 2v7a2 2 0 002 2h5a2 2 0 002-2v-1h1a2 2 0 002-2V9h-1V6a2 2 0 00-2-2H8V4a2 2 0 012-2h2V2H8z"/></svg>
+                            <span id="copy-raw-html-label">{{ __('Copy HTML') }}</span>
+                        </button>
+                    </div>
+                </div>
+
                 <x-filament::section heading="Raw HTML body" collapsible collapsed>
-                    <code class="block whitespace-pre-wrap break-all max-h-96 overflow-auto text-xs">{{ data_get($scrape, 'body') }}</code>
+                    <pre id="raw-html-body" class="text-xs p-4 rounded bg-gray-100 dark:bg-gray-800/30 shadow-sm ring-1 ring-gray-950/5 dark:ring-white/10"><code class="block whitespace-pre-wrap break-all max-h-96 overflow-auto">{{ data_get($scrape, 'body') }}</code></pre>
                 </x-filament::section>
+
+                <script>
+                    (function(){
+                        const btn = document.getElementById('copy-raw-html-btn');
+                        if (!btn) return;
+                        btn.addEventListener('click', async function(){
+                            const label = document.getElementById('copy-raw-html-label');
+                            const el = document.getElementById('raw-html-body');
+                            if (!el) return;
+                            const text = el.innerText || el.textContent || '';
+                            try {
+                                if (navigator.clipboard && navigator.clipboard.writeText) {
+                                    await navigator.clipboard.writeText(text);
+                                } else {
+                                    const ta = document.createElement('textarea');
+                                    ta.value = text;
+                                    ta.style.position = 'fixed';
+                                    ta.style.left = '-9999px';
+                                    document.body.appendChild(ta);
+                                    ta.select();
+                                    document.execCommand('copy');
+                                    ta.remove();
+                                }
+
+                                if (label) {
+                                    label.textContent = '{{ __('Copied!') }}';
+                                    setTimeout(() => { label.textContent = '{{ __('Copy HTML') }}'; }, 2000);
+                                }
+                            } catch (e) {
+                                if (label) {
+                                    label.textContent = '{{ __('Copy failed') }}';
+                                    setTimeout(() => { label.textContent = '{{ __('Copy HTML') }}'; }, 2000);
+                                }
+                            }
+                        });
+                    })();
+                </script>
             </div>
         @endif
         </div>
