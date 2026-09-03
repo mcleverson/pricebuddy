@@ -507,12 +507,14 @@ class Url extends Model
             return null;
         }
 
-        $priceFloat = CurrencyHelper::toFloat($price, locale: $this->store?->locale, iso: $this->store?->currency);
+        $locale = $this->store?->locale ?: 'pt_BR';
+        $currency = $this->store?->currency ?: 'BRL';
+        $priceFloat = CurrencyHelper::toFloat($price, locale: $locale, iso: $currency);
         $priceFactor = $this->price_factor ?: 1;
 
         $originalPrice = data_get($scrapeResult, 'original_price');
         $originalPriceFloat = ($originalPrice !== null && $originalPrice !== '')
-            ? CurrencyHelper::toFloat($originalPrice, locale: $this->store?->locale, iso: $this->store?->currency)
+            ? CurrencyHelper::toFloat($originalPrice, locale: $locale, iso: $currency)
             : null;
 
         return $this->prices()->create([

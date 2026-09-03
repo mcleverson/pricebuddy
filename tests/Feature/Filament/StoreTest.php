@@ -60,6 +60,8 @@ class StoreTest extends TestCase
                 ],
                 'settings.scraper_service' => ScraperService::Api->value,
                 'settings.scraper_service_settings' => "foo=bar\nbaz=qux",
+                'settings.scraper_sleep' => 1500,
+                'settings.scraper_wait_until' => 'networkidle',
                 'settings.locale_settings.locale' => 'fr_FR',
                 'settings.locale_settings.currency' => 'EUR',
             ])
@@ -75,6 +77,8 @@ class StoreTest extends TestCase
         $this->assertSame([
             'foo' => 'bar',
             'baz' => 'qux',
+            'sleep' => '1500',
+            'wait-until' => 'networkidle',
         ], $store->scraper_options);
         $this->assertSame('fr_FR', $store->locale);
         $this->assertSame('EUR', $store->currency);
@@ -96,6 +100,8 @@ class StoreTest extends TestCase
                 ],
                 'settings.scraper_service' => ScraperService::Api->value,
                 'settings.scraper_service_settings' => "fooz=bar\nbazz=qux",
+                'settings.scraper_sleep' => 1000,
+                'settings.scraper_wait_until' => 'domcontentloaded',
             ])
             ->call('create')
             ->assertHasNoFormErrors();
@@ -109,6 +115,8 @@ class StoreTest extends TestCase
         $this->assertSame([
             'fooz' => 'bar',
             'bazz' => 'qux',
+            'sleep' => '1000',
+            'wait-until' => 'domcontentloaded',
         ], $store->scraper_options);
     }
 

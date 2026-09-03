@@ -25,7 +25,7 @@ class CreateProductAction
 
         return Product::create(array_merge($attributes, [
             'title' => Str::limit(data_get($attributes, 'title'), ScrapeUrl::MAX_STR_LENGTH),
-            'image' => $image && strlen($image) < ScrapeUrl::MAX_STR_LENGTH ? $image : null,
+            'image' => $image ? Str::limit($image, ScrapeUrl::MAX_STR_LENGTH - 1, '') : null,
             'user_id' => $userId,
             'favourite' => true,
         ]));

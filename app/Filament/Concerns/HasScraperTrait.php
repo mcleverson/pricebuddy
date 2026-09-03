@@ -62,17 +62,36 @@ trait HasScraperTrait
                 ->options(ScraperService::class)
                 ->descriptions([
                     ScraperService::Http->value => 'Faster and less resource intensive. Use this for JSON strategy',
-                    ScraperService::Api->value => 'Slower but good for scraping JavaScript rendered pages',
+                    ScraperService::Api->value => 'Renders JavaScript in a browser and returns the resulting HTML',
                 ])
                 ->reactive()
                 ->default(ScraperService::Http),
 
             Textarea::make('settings.scraper_service_settings')
-                ->label('Settings')
+                ->label('Additional settings')
                 ->hint(new HtmlString('One option per line. <a href="https://github.com/jez500/seleniumbase-scrapper#api-endpoints" target="_blank">Read docs</a>'))
                 ->hidden(fn (Get $get) => $get('settings.scraper_service') !== ScraperService::Api->value)
                 ->rows(4)
-                ->placeholder("device=Desktop Firefox\nsleep=1000"),
+                ->placeholder("device=Desktop Firefox\nlocale=pt_BR"),
+
+            TextInput::make('settings.scraper_sleep')
+                ->label('Page render wait (ms)')
+                ->numeric()
+                ->minValue(0)
+                ->helperText('Wait this many milliseconds after the page loads before parsing the HTML.')
+                ->hidden(fn (Get $get) => $get('settings.scraper_service') !== ScraperService::Api->value),
+
+            Select::make('settings.scraper_wait_until')
+                ->label('Wait until')
+                ->options([
+                    'domcontentloaded' => 'DOM content loaded',
+                    'load' => 'Load event',
+                    'networkidle' => 'Network idle',
+                    'commit' => 'Navigation committed',
+                ])
+                ->placeholder('Default (domcontentloaded)')
+                ->helperText('Browser navigation milestone to wait for before applying the render wait.')
+                ->hidden(fn (Get $get) => $get('settings.scraper_service') !== ScraperService::Api->value),
 
             Toggle::make('settings.ai_extraction_enabled')
                 ->label('Enable AI price extraction')

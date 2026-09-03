@@ -54,6 +54,10 @@ Connect a [SearXNG](https://github.com/searxng/searxng) instance and search for 
 
 Use tags, filters and multi-user accounts so each person can track their own products, targets and notification preferences.
 
+### Discover deals with the Hermes agent
+
+Create agent strategies in the admin panel to tell the Hermes discovery agent which store to browse, which niche (tags) to target, which starting URLs to visit, and the minimum discount to look for. Run a single strategy or all of them in sequence from the CLI.
+
 ### Host it yourself
 
 Run PriceBuddy on your own server with Docker. Your watchlist, price history and notification settings stay under your control.
@@ -102,6 +106,40 @@ See the [installation guide](https://pricebuddy.jez.me/installation.html) for th
 ## Background tasks
 
 The Docker image includes the scheduler needed for background work: checking prices, updating history and sending notifications. You do not need to run a separate cron container.
+
+## Discovery agent (Hermes)
+
+Hermes is an LLM-driven browser agent that explores configured stores and sends product candidates back to PriceBuddy. You control its behaviour through **Agent Strategies** in the admin panel under **Agent Strategy**.
+
+Each strategy defines:
+
+| Field | Purpose |
+| --- | --- |
+| Store | Which store the agent should browse. |
+| Niche (Tags) | Tags attached to any product the agent collects. |
+| Visit URLs | Ordered list of pages the agent should start from. |
+| Maximum products | Maximum candidates the agent should collect. |
+| Minimum discount (%) | Minimum discount percentage for a candidate to be accepted. |
+
+Run a strategy from the host:
+
+```shell
+php artisan buddy:agent-strategy-run <id>
+```
+
+Run all strategies in sequence:
+
+```shell
+php artisan buddy:agent-strategy-run --all
+```
+
+Preview what would be executed without running it:
+
+```shell
+php artisan buddy:agent-strategy-run <id> --dry-run
+```
+
+The command runs the Hermes container (`hermes_agent`) with the strategy values passed as environment variables and CLI arguments. Make sure Docker is available in the environment where you run the command.
 
 ## Settings and configuration
 

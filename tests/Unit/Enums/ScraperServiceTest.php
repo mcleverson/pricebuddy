@@ -24,7 +24,7 @@ class ScraperServiceTest extends TestCase
 
     public function test_get_label_returns_correct_label_for_api()
     {
-        $this->assertSame('Browser based request', ScraperService::Api->getLabel());
+        $this->assertSame('Browser-rendered HTML', ScraperService::Api->getLabel());
     }
 
     public function test_get_description_returns_correct_description_for_http()

@@ -72,23 +72,22 @@ WebGLRenderingContext.prototype.getParameter = function (param) {
 };
 """
 
-AMAZON_SYSTEM_PROMPT = """Você é o Hermes, um agente de discovery para o PriceBuddy.
+SYSTEM_PROMPT_TEMPLATE = """Você é o Hermes, um agente de discovery para o PriceBuddy.
 
 ## Seu objetivo
 {goal}
 
-## Marketplace: Amazon Brasil
-Domínio permitido: www.amazon.com.br
+## Marketplace
+{marketplace}
+
+## Domínios permitidos
+{allowed_hosts}
 
 ## Boas superfícies iniciais (ordem OBRIGATÓRIA)
-1. Comece SEMPRE por: Ofertas do Dia: https://www.amazon.com.br/gp/goldbox
-2. Depois, se ainda faltar coletar produtos, pode usar:
-   - Mais vendidos em Eletrônicos: https://www.amazon.com.br/gp/bestsellers/electronics
-   - Outras categorias de Mais vendidos: https://www.amazon.com.br/gp/bestsellers/
-   - Eletrônicos e Tecnologia: https://www.amazon.com.br/b?node=16209062011
+{starting_urls}
 
 ## Sinais de oportunidade
-- Desconto aparente de PELO MENOS 20% (original_price > price e o desconto percentual é ≥ 20%)
+- Desconto aparente de PELO MENOS {min_discount_percentage}% (original_price > price e o desconto percentual é ≥ {min_discount_percentage}%)
 - Badge "Oferta" ou "Promoção"
 - Rating alto (4+ estrelas)
 - Quantidade significativa de reviews
@@ -112,27 +111,25 @@ Use as ferramentas abaixo para explorar o marketplace:
 7. **finish()**: Finaliza a exploração
 
 ## Estratégia OBRIGATÓRIA
-1. Comece SEMPRE por Ofertas do Dia: https://www.amazon.com.br/gp/goldbox.
-2. Se ainda faltar coletar produtos, vá para Mais vendidos em Eletrônicos: https://www.amazon.com.br/gp/bestsellers/electronics.
-3. Os produtos coletados serão etiquetados com o nicho configurado pelo usuário (ex: eletronicos).
-3. Use inspect_page() para obter o TEXTO VISÍVEL e os LINKS da página.
-4. Leia o texto e identifique produtos com título, preço e URL. Para cada um, chame add_product_candidate(url, title, price, original_price).
-5. Só navegue para outra página depois de registrar TODOS os produtos interessantes da página atual.
-6. Use finish() quando tiver coletado 10 candidatos OU quando não houver mais produtos relevantes.
+1. Comece SEMPRE pelas URLs listadas acima, na ordem indicada.
+2. Use inspect_page() para obter o TEXTO VISÍVEL e os LINKS da página.
+3. Leia o texto e identifique produtos com título, preço e URL. Para cada um, chame add_product_candidate(url, title, price, original_price).
+4. Só navegue para outra página depois de registrar TODOS os produtos interessantes da página atual.
+5. Use finish() quando tiver coletado {max_candidates} candidatos OU quando não houver mais produtos relevantes.
 
 ## Como identificar produtos
 - Você deve LER o texto visível da página e usar a lista "product_links" retornada por inspect_page().
-- "product_links" contém links de produtos (URLs com /dp/) com o texto do link, um trecho do contexto ao redor e, quando disponível, uma "image_url".
+- "product_links" contém links de produtos com o texto do link, um trecho do contexto ao redor e, quando disponível, uma "image_url".
 - Para cada produto em "product_links", extraia: título, preço atual, preço original (se visível), URL e image_url (se presente).
-- Só adicione um produto se ele tiver preço original visível E o desconto percentual for de PELO MENOS 20%. Desconto percentual = ((preço original - preço atual) / preço original) * 100.
+- Só adicione um produto se ele tiver preço original visível E o desconto percentual for de PELO MENOS {min_discount_percentage}%.
 - Ao chamar add_product_candidate, SEMPRE passe o campo "image_url" usando o valor de image_url fornecido em product_links. Isso é ESSENCIAL para que o produto apareça com foto no PriceBuddy.
 - Não use seletores CSS, classes, IDs ou XPath. Use apenas o texto visível e os links.
-- Prefira identificar produtos diretamente da página de listagem (Ofertas do Dia, Mais Vendidos) sem clicar em cada produto.
+- Prefira identificar produtos diretamente da página de listagem sem clicar em cada produto.
 
 ## Navegação correta
-- Para mudar de página, use click() com o TEXTO VISÍVEL exato do link (ex: "Ofertas do Dia", "Mais Vendidos", "Eletrônicos").
+- Para mudar de página, use click() com o TEXTO VISÍVEL exato do link.
 - Após click(), sempre chame inspect_page() para obter o texto da nova página.
-- Não use seletores CSS complexos como ".s-result-item .a-link-normal". Use texto visível.
+- Não use seletores CSS complexos. Use texto visível.
 
 ## Imagens e metadados
 - A imagem do produto será obtida automaticamente via get_product_metadata(url) antes do envio final.
@@ -141,15 +138,15 @@ Use as ferramentas abaixo para explorar o marketplace:
 ## Exemplo de uso correto
 Após inspect_page(), se identificar:
 "Fone de Ouvido Bluetooth XYZ - R$ 199,00 - De: R$ 299,00"
-O desconto é de ~33%, portanto ≥ 20%. Chame:
-add_product_candidate(url="https://www.amazon.com.br/dp/ABC123", title="Fone de Ouvido Bluetooth XYZ", price="R$ 199,00", original_price="R$ 299,00")
+O desconto é de ~33%, portanto ≥ {min_discount_percentage}%. Chame:
+add_product_candidate(url="https://example.com/produto", title="Fone de Ouvido Bluetooth XYZ", price="R$ 199,00", original_price="R$ 299,00")
 
-Se o mesmo produto estiver "R$ 199,00 - De: R$ 219,00" (desconto ~9%), NÃO chame add_product_candidate, pois o desconto é menor que 20%.
+Se o mesmo produto estiver "R$ 199,00 - De: R$ 219,00" (desconto ~9%), NÃO chame add_product_candidate, pois o desconto é menor que {min_discount_percentage}%.
 
 ## Importante
-- Você deve chamar add_product_candidate() para CADA produto de interesse que encontrar que atenda ao critério de desconto ≥ 20%.
-- Colete pelo menos 3 a 5 produtos por página antes de navegar, se houverem produtos com desconto ≥ 20%.
-- Não registre produtos sem preço original ou com desconto menor que 20%.
+- Você deve chamar add_product_candidate() para CADA produto de interesse que encontrar que atenda ao critério de desconto ≥ {min_discount_percentage}%.
+- Colete pelo menos 3 a 5 produtos por página antes de navegar, se houverem produtos com desconto ≥ {min_discount_percentage}%.
+- Não registre produtos sem preço original ou com desconto menor que {min_discount_percentage}%.
 - Não deixe de registrar produtos por falta de image_url (a imagem será obtida automaticamente).
 - Não tente acessar URLs bloqueadas (cart, checkout, account, etc.)
 - Respeite os limites impostos (steps, pages, candidates, timeout)
@@ -408,6 +405,8 @@ class Agent:
         run_timeout_seconds: int = config.RUN_TIMEOUT_SECONDS,
         headless: bool = True,
         tags: list[str] | None = None,
+        starting_urls: list[str] | None = None,
+        min_discount_percentage: float = config.HERMES_MIN_DISCOUNT_PERCENTAGE,
     ) -> None:
         self.marketplace = marketplace
         self.goal = goal
@@ -419,6 +418,8 @@ class Agent:
         self.run_timeout_seconds = run_timeout_seconds
         self.headless = headless
         self.tags = tags or []
+        self.starting_urls = starting_urls or []
+        self.min_discount_percentage = min_discount_percentage
 
         self.steps_log: list[dict[str, Any]] = []
         self.start_time = 0.0
@@ -661,20 +662,30 @@ class Agent:
 
     def _build_initial_messages(self) -> list[dict[str, Any]]:
         """Build the initial conversation messages."""
-        system_prompt = AMAZON_SYSTEM_PROMPT.format(goal=self.goal)
-        
+        allowed_hosts = getattr(config, "ALLOWED_HOSTS", "")
+        starting_urls_text = "\n".join(
+            f"{idx + 1}. {url}" for idx, url in enumerate(self.starting_urls)
+        ) if self.starting_urls else "1. (nenhuma URL inicial configurada)"
+
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            goal=self.goal,
+            marketplace=self.marketplace,
+            allowed_hosts=allowed_hosts,
+            starting_urls=starting_urls_text,
+            min_discount_percentage=self.min_discount_percentage,
+            max_candidates=self.max_raw_candidates,
+        )
+
+        user_content = (
+            f"Inicie a exploração do marketplace {self.marketplace}.\n"
+            f"Objetivo: {self.goal}\n\n"
+            f"Comece OBRIGATORIAMENTE pelas seguintes URLs, nesta ordem:\n{starting_urls_text}\n\n"
+            f"Leia o texto visível, identifique produtos e chame add_product_candidate para cada um."
+        )
+
         return [
             {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"Inicie a exploração do marketplace Amazon Brasil.\n"
-                    f"Objetivo: {self.goal}\n\n"
-                f"Sugestão: comece OBRIGATORIAMENTE por https://www.amazon.com.br/gp/goldbox, depois explore "
-                f"https://www.amazon.com.br/gp/bestsellers/electronics. Leia o texto visível, identifique produtos "
-                f"e chame add_product_candidate para cada um."
-                ),
-            },
+            {"role": "user", "content": user_content},
         ]
 
     def _build_report(self, candidates: list[ProductCandidate], guard: BrowserGuard) -> dict[str, Any]:
@@ -752,6 +763,30 @@ def main() -> int:
         help="Tag/niche to attach to discovered products (can be used multiple times). "
              "Also read from HERMES_DEFAULT_TAG env var.",
     )
+    parser.add_argument(
+        "--urls",
+        action="append",
+        dest="starting_urls",
+        help="Starting URL to visit (can be used multiple times).",
+    )
+    parser.add_argument(
+        "--max-raw-candidates",
+        type=int,
+        default=config.MAX_RAW_CANDIDATES,
+        help="Maximum raw candidates to collect before stopping.",
+    )
+    parser.add_argument(
+        "--max-selected-candidates",
+        type=int,
+        default=config.MAX_SELECTED_CANDIDATES,
+        help="Maximum candidates to select/send to PriceBuddy.",
+    )
+    parser.add_argument(
+        "--min-discount-percentage",
+        type=float,
+        default=config.HERMES_MIN_DISCOUNT_PERCENTAGE,
+        help="Minimum discount percentage to accept a candidate.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -768,6 +803,10 @@ def main() -> int:
         goal=args.goal,
         headless=not args.headed,
         tags=tags,
+        starting_urls=args.starting_urls,
+        max_raw_candidates=args.max_raw_candidates,
+        max_selected_candidates=args.max_selected_candidates,
+        min_discount_percentage=args.min_discount_percentage,
     )
 
     report = agent.run()

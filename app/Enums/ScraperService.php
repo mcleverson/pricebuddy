@@ -23,7 +23,7 @@ enum ScraperService: string implements HasColor, HasDescription, HasLabel
     {
         return match ($this) {
             self::Http => 'Curl based HTTP request',
-            self::Api => 'Browser based request',
+            self::Api => 'Browser-rendered HTML',
         };
     }
 

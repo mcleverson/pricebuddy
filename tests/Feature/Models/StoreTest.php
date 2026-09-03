@@ -85,6 +85,21 @@ class StoreTest extends TestCase
         $this->assertEquals(['option1' => 'value1'], $store->scraper_options);
     }
 
+    public function test_scraper_options_include_explicit_render_settings()
+    {
+        $store = Store::factory()->create(['settings' => [
+            'scraper_service_settings' => 'device=Desktop Firefox',
+            'scraper_sleep' => 1500,
+            'scraper_wait_until' => 'networkidle',
+        ]]);
+
+        $this->assertEquals([
+            'device' => 'Desktop Firefox',
+            'sleep' => '1500',
+            'wait-until' => 'networkidle',
+        ], $store->scraper_options);
+    }
+
     public function test_ai_extraction_accessors_read_from_settings(): void
     {
         $store = Store::factory()->create([

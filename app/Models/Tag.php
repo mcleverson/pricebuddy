@@ -6,6 +6,7 @@ use Database\Factories\TagFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
 
 /**
@@ -36,6 +37,13 @@ class Tag extends Model
     public function products(): MorphToMany
     {
         return $this->morphedByMany(Product::class, 'taggable');
+    }
+
+    public function agentStrategies(): BelongsToMany
+    {
+        return $this->belongsToMany(AgentStrategy::class, 'agent_strategy_tag')
+            ->orderBy('name')
+            ->withTimestamps();
     }
 
     /**

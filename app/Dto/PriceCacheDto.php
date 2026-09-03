@@ -29,6 +29,8 @@ class PriceCacheDto
 
     private float $unitPrice;
 
+    private ?float $originalPrice;
+
     private float $priceFactor;
 
     private array $history;
@@ -58,6 +60,7 @@ class PriceCacheDto
         float $priceFactor = 1,
         ?string $unitOfMeasure = self::DEFAULT_UNIT_OF_MEASURE,
         StockStatus|string|null $availability = null,
+        ?float $originalPrice = null,
     ) {
         $this->storeId = $storeId;
         $this->storeName = $storeName;
@@ -66,6 +69,7 @@ class PriceCacheDto
         $this->trend = $trend;
         $this->price = $price;
         $this->unitPrice = $unitPrice ?? $price;
+        $this->originalPrice = $originalPrice;
         $this->priceFactor = $priceFactor;
         $this->history = $history;
         $this->lastScrapeDate = $lastScrape ? Carbon::parse($lastScrape) : null;
@@ -136,6 +140,39 @@ class PriceCacheDto
     public function getUnitPriceFormatted(): string
     {
         return CurrencyHelper::toString($this->getUnitPrice(), locale: $this->locale, iso: $this->currency);
+    }
+
+    public function getOriginalPrice(): ?float
+    {
+        return $this->originalPrice;
+    }
+
+    public function getOriginalPriceFormatted(): string
+    {
+        $price = $this->getOriginalPrice();
+
+        return $price !== null
+            ? CurrencyHelper::toString($price, locale: $this->locale, iso: $this->currency)
+            : '';
+    }
+
+    public function hasOriginalPrice(): bool
+    {
+        return $this->originalPrice !== null && $this->originalPrice > 0;
+    }
+
+    public function getDiscountPercentage(): ?float
+    {
+        if (! $this->hasOriginalPrice()) {
+            return null;
+        }
+
+        $current = $this->getUnitPrice();
+        if ($current <= 0) {
+            return null;
+        }
+
+        return round((($this->originalPrice - $current) / $this->originalPrice) * 100, 0);
     }
 
     public function getUnitOfMeasure(): string
@@ -268,6 +305,7 @@ class PriceCacheDto
             $data['price_factor'] ?? 1,
             $data['unit_of_measure'] ?? null,
             $data['availability'] ?? null,
+            $data['original_price'] ?? null,
         );
     }
 
@@ -286,6 +324,9 @@ class PriceCacheDto
             'price_formatted' => $this->getPriceFormatted(),
             'unit_price' => $this->getUnitPrice(),
             'unit_price_formatted' => $this->getUnitPriceFormatted(),
+            'original_price' => $this->getOriginalPrice(),
+            'original_price_formatted' => $this->getOriginalPriceFormatted(),
+            'discount_percentage' => $this->getDiscountPercentage(),
             'price_factor' => $this->getPriceFactor(),
             'history' => $this->getHistory(),
             'last_scrape' => $this->getLastScrapeDate(),

@@ -194,7 +194,7 @@ class ProductSourceSearchService
     {
         $settings = data_get($this->source, 'settings.scraper_service_settings', '');
 
-        return collect(explode(PHP_EOL, (string) $settings))
+        $options = collect(explode(PHP_EOL, (string) $settings))
             ->filter(fn ($option) => filled($option) && str_contains($option, '='))
             ->mapWithKeys(function ($option) {
                 $parts = explode('=', $option, 2);
@@ -202,6 +202,18 @@ class ProductSourceSearchService
                 return [trim((string) $parts[0]) => trim((string) $parts[1])];
             })
             ->toArray();
+
+        $sleep = data_get($this->source, 'settings.scraper_sleep');
+        if ($sleep !== null && $sleep !== '') {
+            $options['sleep'] = (string) $sleep;
+        }
+
+        $waitUntil = data_get($this->source, 'settings.scraper_wait_until');
+        if (filled($waitUntil)) {
+            $options['wait-until'] = $waitUntil;
+        }
+
+        return $options;
     }
 
     public function buildSearchUrl(string $query): string

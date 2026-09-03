@@ -35,6 +35,14 @@
                                 <span class="text-3xl font-semibold leading-none">
                                     {{ $latestPrice->getUnitPriceFormatted() }}
                                 </span>
+                                @if ($latestPrice->hasOriginalPrice() && $latestPrice->getDiscountPercentage() > 0)
+                                    <span class="text-sm line-through text-gray-400 dark:text-gray-500">
+                                        {{ $latestPrice->getOriginalPriceFormatted() }}
+                                    </span>
+                                    <span class="inline-flex items-center rounded-md bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
+                                        -{{ $latestPrice->getDiscountPercentage() }}%
+                                    </span>
+                                @endif
 
                             @else
                                 <span class="text-lg font-semibold text-gray-500 dark:text-gray-400">

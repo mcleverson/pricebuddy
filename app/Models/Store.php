@@ -221,7 +221,7 @@ class Store extends Model
     {
         return Attribute::make(
             get: function () {
-                return collect(explode(PHP_EOL, data_get($this->settings, 'scraper_service_settings', '')))
+                $options = collect(explode(PHP_EOL, data_get($this->settings, 'scraper_service_settings', '')))
                     ->filter(fn ($option) => ! empty($option) && Str::contains($option, '='))
                     ->mapWithKeys(function ($option) {
                         $parts = explode('=', $option);
@@ -229,6 +229,18 @@ class Store extends Model
                         return [data_get($parts, 0) => data_get($parts, 1)];
                     })
                     ->toArray();
+
+                $sleep = data_get($this->settings, 'scraper_sleep');
+                if ($sleep !== null && $sleep !== '') {
+                    $options['sleep'] = (string) $sleep;
+                }
+
+                $waitUntil = data_get($this->settings, 'scraper_wait_until');
+                if (filled($waitUntil)) {
+                    $options['wait-until'] = $waitUntil;
+                }
+
+                return $options;
             }
         );
     }

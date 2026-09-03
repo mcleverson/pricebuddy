@@ -2,6 +2,7 @@
 
 use App\Enums\ApiAbility;
 use App\Http\Controllers\Api\ClientConfigController;
+use App\Http\Controllers\Api\DiscoveryCandidateController;
 use App\Http\Controllers\Api\MetaExtractionController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -17,3 +18,7 @@ Route::post('/meta-extraction', MetaExtractionController::class)
 Route::get('/client-config', ClientConfigController::class)
     ->middleware(['auth:sanctum', 'ability:'.ApiAbility::ClientConfigRead->value])
     ->name('api.client-config');
+
+Route::post('/discovery/candidates', DiscoveryCandidateController::class)
+    ->middleware(['auth:sanctum', 'ability:'.ApiAbility::DiscoveryCandidatesIngest->value])
+    ->name('api.discovery.candidates.ingest');

@@ -10,14 +10,7 @@ enum ApiAbility: string
 
     case ClientConfigRead = 'client-config:read';
 
-    public function label(): string
-    {
-        return match ($this) {
-            self::MetaExtractionExtract => 'Extract metadata from a URL',
-            self::UserDetail => 'Read the authenticated account',
-            self::ClientConfigRead => 'Read client capability configuration',
-        };
-    }
+    case DiscoveryCandidatesIngest = 'discovery:candidates:ingest';
 
     public function group(): string
     {
@@ -25,6 +18,17 @@ enum ApiAbility: string
             self::MetaExtractionExtract => 'Meta extraction',
             self::UserDetail => 'Account',
             self::ClientConfigRead => 'Client config',
+            self::DiscoveryCandidatesIngest => 'Discovery',
+        };
+    }
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::MetaExtractionExtract => 'Extract metadata from a URL',
+            self::UserDetail => 'Read the authenticated account',
+            self::ClientConfigRead => 'Read client capability configuration',
+            self::DiscoveryCandidatesIngest => 'Ingest externally discovered product candidates',
         };
     }
 }
