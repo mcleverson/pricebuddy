@@ -24,6 +24,7 @@ services:
                 condition: service_healthy
         networks:
             - default
+            - hermes_app
 
     database:
         image: mysql:8.2
@@ -48,14 +49,136 @@ services:
             context: ./docker/scraper
             dockerfile: Dockerfile
         image: pricebuddy-scraper:latest
+        pull_policy: build
         networks:
             - default
         ports:
             - 3030:3000 # Optional, if you want to access the scrapper api from the host machine
 
+    hermes:
+        build:
+            context: .
+            dockerfile: docker/hermes/Dockerfile
+        image: pricebuddy-hermes:latest
+        environment:
+            PRICEBUDDY_API_BASE_URL: http://app/api
+            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
+            HERMES_HTTP_PROXY: ${HERMES_HTTP_PROXY:-}
+            HERMES_DEFAULT_TAG: ${HERMES_DEFAULT_TAG:-}
+        depends_on:
+            app:
+                condition: service_started
+        volumes:
+            - hermes_chromium_profile:/home/hermes/.config/chromium
+        networks:
+            - hermes_app
+        ports:
+            - 8000:8000
+        healthcheck:
+            test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')" ]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+
+    hermes_visual:
+        profiles: [ "visual" ]
+        build:
+            context: .
+            dockerfile: docker/hermes/Dockerfile
+        image: pricebuddy-hermes:latest
+        shm_size: "1gb"
+        environment:
+            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
+            HERMES_HTTP_PROXY: ${HERMES_HTTP_PROXY:-}
+            HERMES_DEFAULT_TAG: ${HERMES_DEFAULT_TAG:-}
+        depends_on:
+            app:
+                condition: service_started
+        volumes:
+            - hermes_chromium_profile:/home/hermes/.config/chromium
+        networks:
+            - hermes_app
+        ports:
+            - "127.0.0.1:7900:7900"
+        stdin_open: true
+        tty: true
+        entrypoint: [ "bash", "/opt/hermes/run-visual-diagnose.sh" ]
+    hermes_agent:
+        profiles: [ "agent" ]
+        build:
+            context: .
+            dockerfile: docker/hermes/Dockerfile
+        image: pricebuddy-hermes:latest
+        shm_size: "1gb"
+        environment:
+            PRICEBUDDY_API_BASE_URL: http://app/api
+            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            HERMES_STORE_ID: ${HERMES_STORE_ID:-}
+            HERMES_MIN_DISCOUNT_PERCENTAGE: ${HERMES_MIN_DISCOUNT_PERCENTAGE:-20}
+            HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
+            HERMES_HTTP_PROXY: ${HERMES_HTTP_PROXY:-}
+            HERMES_DEFAULT_TAG: ${HERMES_DEFAULT_TAG:-}
+            HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
+            HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+            HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:-}
+            HERMES_MAX_STEPS: ${HERMES_MAX_STEPS:-30}
+            HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
+            HERMES_MAX_RAW_CANDIDATES: ${HERMES_MAX_RAW_CANDIDATES:-30}
+            HERMES_MAX_SELECTED_CANDIDATES: ${HERMES_MAX_SELECTED_CANDIDATES:-10}
+            HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
+        depends_on:
+            app:
+                condition: service_started
+        volumes:
+            - hermes_chromium_profile:/home/hermes/.config/chromium
+        networks:
+            - hermes_app
+        stdin_open: true
+        tty: true
+        entrypoint: [ "bash", "/opt/hermes/run-agent-headless.sh" ]
+
+    hermes_agent_visual:
+        profiles: [ "agent-visual" ]
+        build:
+            context: .
+            dockerfile: docker/hermes/Dockerfile
+        image: pricebuddy-hermes:latest
+        shm_size: "1gb"
+        environment:
+            PRICEBUDDY_API_BASE_URL: http://app/api
+            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            HERMES_STORE_ID: ${HERMES_STORE_ID:-}
+            HERMES_MIN_DISCOUNT_PERCENTAGE: ${HERMES_MIN_DISCOUNT_PERCENTAGE:-20}
+            HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
+            HERMES_HTTP_PROXY: ${HERMES_HTTP_PROXY:-}
+            HERMES_DEFAULT_TAG: ${HERMES_DEFAULT_TAG:-}
+            HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
+            HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+            HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:-}
+            HERMES_MAX_STEPS: ${HERMES_MAX_STEPS:-30}
+            HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
+            HERMES_MAX_RAW_CANDIDATES: ${HERMES_MAX_RAW_CANDIDATES:-30}
+            HERMES_MAX_SELECTED_CANDIDATES: ${HERMES_MAX_SELECTED_CANDIDATES:-10}
+            HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
+        depends_on:
+            app:
+                condition: service_started
+        volumes:
+            - hermes_chromium_profile:/home/hermes/.config/chromium
+        networks:
+            - hermes_app
+        ports:
+            - "127.0.0.1:7900:7900"
+        stdin_open: true
+        tty: true
+        entrypoint: [ "bash", "/opt/hermes/run-agent.sh" ]
 volumes:
     storage:
     database:
+    hermes_chromium_profile:
 
 networks:
     default:
+    hermes_app:
