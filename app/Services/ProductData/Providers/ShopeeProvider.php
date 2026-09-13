@@ -210,7 +210,7 @@ class ShopeeProvider extends ConfiguredProvider
     protected function productsByShop(ShopeeAffiliateClient $client, Store $store, int $shopId, string $tag, int $limit, float $minDiscountPercentage): Collection
     {
         $query = <<<GRAPHQL
-            query ProductsByShop(\$shopId: Int, \$sortType: Int, \$limit: Int) {
+            query ProductsByShop(\$shopId: Int64, \$sortType: Int, \$limit: Int) {
                 productOfferV2(shopId: \$shopId, sortType: \$sortType, limit: \$limit) {
                     {$this->productOfferFields()}
                 }
@@ -218,7 +218,10 @@ class ShopeeProvider extends ConfiguredProvider
             GRAPHQL;
 
         $data = $client->query($query, [
-            'shopId' => $shopId,
+            // Shopee's Int64 custom scalar must be sent as a JSON string, not a
+            // bare number — confirmed against the live API ("wrong type" 10010
+            // otherwise).
+            'shopId' => (string) $shopId,
             'sortType' => self::PRODUCT_SORT_COMMISSION,
             'limit' => $limit,
         ]);
@@ -281,14 +284,15 @@ class ShopeeProvider extends ConfiguredProvider
         }
 
         $query = <<<GRAPHQL
-            query ProductOffer(\$itemId: Int, \$shopId: Int) {
+            query ProductOffer(\$itemId: Int64, \$shopId: Int64) {
                 productOfferV2(itemId: \$itemId, shopId: \$shopId) {
                     {$this->productOfferFields()}
                 }
             }
             GRAPHQL;
 
-        $data = $this->client($store)->query($query, ['itemId' => $itemId, 'shopId' => $shopId]);
+        // Int64 must be sent as a JSON string (see productsByShop for details).
+        $data = $this->client($store)->query($query, ['itemId' => (string) $itemId, 'shopId' => (string) $shopId]);
 
         return data_get($data, 'productOfferV2.nodes.0');
     }
