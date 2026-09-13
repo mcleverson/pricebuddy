@@ -6,7 +6,6 @@ use App\Contracts\ProductDataProvider;
 use App\Enums\AccessMode;
 use App\Enums\ProductDataOperation;
 use App\Exceptions\ProductDataAccessException;
-use App\Models\ProductSource;
 use App\Models\Store;
 use App\Services\ProductData\ApiProviderRegistry;
 use App\Services\ProductData\MarketplaceRegistry;
@@ -36,25 +35,25 @@ class ProductDataGatewayTest extends TestCase
         $this->assertNull($registry->resolve('shopee_br'));
     }
 
-    public function test_auto_uses_configured_provider_with_capability(): void
+    public function test_agentic_mode_uses_configured_provider_with_capability(): void
     {
         $provider = $this->provider('amazon_br', configured: true, operations: [ProductDataOperation::ProductDetails]);
         $gateway = $this->gateway($provider);
-        $store = $this->store(AccessMode::Auto);
+        $store = $this->store(AccessMode::Agentic);
 
         $result = $gateway->productDetails($store, 'https://amazon.com.br/dp/ABC', fn (): array => ['title' => 'scraped']);
 
         $this->assertSame('api', $result['origin']);
     }
 
-    public function test_auto_falls_back_when_provider_is_not_configured_or_lacks_capability(): void
+    public function test_agentic_mode_falls_back_when_provider_is_not_configured_or_lacks_capability(): void
     {
         foreach ([
             $this->provider('amazon_br'),
             $this->provider('amazon_br', configured: true),
         ] as $provider) {
             $gateway = $this->gateway($provider);
-            $store = $this->store(AccessMode::Auto);
+            $store = $this->store(AccessMode::Agentic);
             $result = $gateway->productDetails($store, 'https://amazon.com.br/dp/ABC', fn (): array => ['origin' => 'scraping']);
 
             $this->assertSame('scraping', $result['origin']);
@@ -81,27 +80,6 @@ class ProductDataGatewayTest extends TestCase
         );
 
         $this->assertSame('scraping', $result['origin']);
-    }
-
-    public function test_source_search_uses_the_same_access_decision(): void
-    {
-        $provider = $this->provider('shopee_br', configured: true, operations: [ProductDataOperation::ProductSearch]);
-        $source = new ProductSource([
-            'search_url' => 'https://shopee.com.br/search?keyword=:search_term',
-            'marketplace_id' => 'shopee_br',
-            'access_mode' => AccessMode::Auto,
-        ]);
-
-        /** @var Collection<int, array<string, mixed>> $fallbackResults */
-        $fallbackResults = collect([['origin' => 'scraping']]);
-
-        $result = $this->gateway($provider)->productSearch(
-            $source,
-            'mouse',
-            fn (): Collection => $fallbackResults,
-        );
-
-        $this->assertSame([['origin' => 'api']], $result->all());
     }
 
     private function gateway(ProductDataProvider $provider): ProductDataGateway
@@ -148,13 +126,6 @@ class ProductDataGatewayTest extends TestCase
 
             public function fetch(ProductDataOperation $operation, array $context): array|Collection
             {
-                if ($operation === ProductDataOperation::ProductSearch) {
-                    /** @var Collection<int, array<string, mixed>> $results */
-                    $results = collect([['origin' => 'api']]);
-
-                    return $results;
-                }
-
                 return ['origin' => 'api'];
             }
         };

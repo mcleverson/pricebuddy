@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Enums\AccessMode;
 use App\Enums\AiFeature;
 use App\Enums\Icons;
+use App\Enums\ProxyMode;
 use App\Enums\ScraperService;
 use App\Enums\ScraperStrategyType;
 use App\Enums\StockStatus;
@@ -91,10 +92,23 @@ class StoreResource extends Resource
                     Select::make('access_mode')
                         ->label('Access mode')
                         ->options(AccessMode::class)
-                        ->default(AccessMode::Auto->value)
+                        ->default(AccessMode::Scraping->value)
                         ->selectablePlaceholder(false)
-                        ->hintIcon(Icons::Help->value, 'Auto uses a configured API when the operation is supported, otherwise scraping'),
+                        ->live()
+                        ->hintIcon(Icons::Help->value, 'Api requires a configured provider for this marketplace; Scraping visits product pages directly; Agentic autonomously discovers new products via Hermes'),
                 ])->columns(2),
+
+                Section::make('Proxy')
+                    ->description('Proxy settings used when scraping this store. Most major marketplaces block unproxied scraping.')
+                    ->schema(self::proxyFormFields())
+                    ->columns(2)
+                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Scraping->value),
+
+                Section::make('Agentic discovery')
+                    ->description('Hermes autonomously browses these pages looking for new products matching the criteria below')
+                    ->schema(self::agenticFormFields())
+                    ->columns(2)
+                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value),
 
                 Forms\Components\Group::make([
                     Section::make('Title strategy')->schema([
@@ -171,6 +185,74 @@ class StoreResource extends Resource
                 ])->description('Additional notes regarding this store and how to scrape its content'),
             ])
             ->columns(1);
+    }
+
+    /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function proxyFormFields(): array
+    {
+        return [
+            Select::make('settings.proxy_mode')
+                ->label('Proxy mode')
+                ->options(ProxyMode::class)
+                ->placeholder('Use global default ('.(ProxyMode::tryFrom(config('scraping.proxy.mode'))?->name ?? ProxyMode::Disabled->name).')')
+                ->hintIcon(Icons::Help->value, 'Required always uses a proxy (and fails if none is available); Prefer uses one when available; Disabled never uses one. Most major marketplaces block unproxied scraping.'),
+        ];
+    }
+
+    /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function agenticFormFields(): array
+    {
+        $isAgentic = fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value;
+
+        return [
+            Select::make('tags')
+                ->label('Niche (Tags)')
+                ->relationship('tags', 'name')
+                ->multiple()
+                ->required($isAgentic)
+                ->preload()
+                ->searchable()
+                ->columnSpanFull(),
+
+            TextInput::make('agent_max_products')
+                ->label('Minimum new products')
+                ->helperText('Stop after this many new products are created. Existing products do not count.')
+                ->numeric()
+                ->integer()
+                ->minValue(1)
+                ->default(10)
+                ->required($isAgentic),
+
+            TextInput::make('agent_min_discount_percentage')
+                ->label('Minimum discount (%)')
+                ->numeric()
+                ->minValue(0)
+                ->maxValue(100)
+                ->default(20)
+                ->suffix('%')
+                ->required($isAgentic),
+
+            Forms\Components\Repeater::make('agent_urls')
+                ->label('Visit URLs')
+                ->hintIcon(Icons::Help->value, 'URLs the agent should visit, in priority order')
+                ->schema([
+                    TextInput::make('url')
+                        ->label('URL')
+                        ->url()
+                        ->required()
+                        ->maxLength(2048),
+                ])
+                ->reorderable()
+                ->collapsible()
+                ->minItems(1)
+                ->itemLabel(fn (array $state): ?string => $state['url'] ?? null)
+                ->required($isAgentic)
+                ->columnSpanFull(),
+        ];
     }
 
     public static function testForm(Form $form, Store $store): Form

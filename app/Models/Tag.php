@@ -39,9 +39,9 @@ class Tag extends Model
         return $this->morphedByMany(Product::class, 'taggable');
     }
 
-    public function agentStrategies(): BelongsToMany
+    public function stores(): BelongsToMany
     {
-        return $this->belongsToMany(AgentStrategy::class, 'agent_strategy_tag')
+        return $this->belongsToMany(Store::class, 'store_tag')
             ->orderBy('name')
             ->withTimestamps();
     }

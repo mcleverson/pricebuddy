@@ -14,6 +14,9 @@
 /docs/node_modules
 /docs/public/node_modules
 /vendor
+hermes/.venv
+__pycache__/
+*.pyc
 
 # Build
 npm-debug.log

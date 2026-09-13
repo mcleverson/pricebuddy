@@ -5,9 +5,7 @@ namespace App\Services\ProductData;
 use App\Enums\AccessMode;
 use App\Enums\ProductDataOperation;
 use App\Exceptions\ProductDataAccessException;
-use App\Models\ProductSource;
 use App\Models\Store;
-use Illuminate\Support\Collection;
 
 class ProductDataGateway
 {
@@ -43,30 +41,11 @@ class ProductDataGateway
     }
 
     /**
-     * Search a Product Source, preserving its existing HTML extraction fallback.
-     *
-     * @param  callable(): Collection<int, array<string, mixed>>  $scrapingFallback
-     * @return Collection<int, array<string, mixed>>
-     */
-    public function productSearch(ProductSource $source, string $query, callable $scrapingFallback): Collection
-    {
-        $result = $this->run(
-            $source,
-            ProductDataOperation::ProductSearch,
-            ['source' => $source, 'query' => $query],
-            $scrapingFallback,
-            $source->search_url,
-        );
-
-        return $result instanceof Collection ? $result : collect($result);
-    }
-
-    /**
      * @param  array<string, mixed>  $context
      * @param  callable(): mixed  $scrapingFallback
      */
     protected function run(
-        Store|ProductSource $subject,
+        Store $subject,
         ProductDataOperation $operation,
         array $context,
         callable $scrapingFallback,
@@ -78,16 +57,7 @@ class ProductDataGateway
             return $scrapingFallback();
         }
 
-        if ($subject instanceof ProductSource) {
-            $subjectMarketplace = $subject->marketplace_id;
-
-            if (blank($subjectMarketplace)) {
-                $subjectMarketplace = $subject->store?->marketplace_id;
-            }
-        } else {
-            $subjectMarketplace = $subject->marketplace_id;
-        }
-        $marketplace = $this->marketplaces->resolve($subjectMarketplace, $url);
+        $marketplace = $this->marketplaces->resolve($subject->marketplace_id, $url);
         $provider = $this->providers->resolve($marketplace);
         $available = $provider !== null
             && $provider->isConfigured()
@@ -108,7 +78,7 @@ class ProductDataGateway
         return $provider->fetch($operation, $context);
     }
 
-    protected function accessMode(Store|ProductSource $subject): AccessMode
+    protected function accessMode(Store $subject): AccessMode
     {
         $value = $subject->access_mode;
 

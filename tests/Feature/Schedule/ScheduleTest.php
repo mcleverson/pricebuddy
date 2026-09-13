@@ -4,7 +4,6 @@ namespace Tests\Feature\Schedule;
 
 use App\Console\Commands\FetchAll;
 use App\Console\Commands\FetchDue;
-use App\Models\UrlResearch;
 use App\Services\Helpers\ScheduleHelper;
 use App\Services\Helpers\SettingsHelper;
 use Illuminate\Console\Scheduling\Schedule;
@@ -280,51 +279,6 @@ class ScheduleTest extends TestCase
     }
 
     /**
-     * Test model:prune command for UrlResearch is scheduled daily.
-     */
-    public function test_url_research_prune_command_is_scheduled_daily(): void
-    {
-        $schedule = $this->getSchedule();
-        $events = collect($schedule->events());
-
-        $pruneUrlResearchEvent = $events->first(function ($event) {
-            $command = $event->command ?? '';
-
-            return str_contains($command, 'model:prune') &&
-                   str_contains($command, UrlResearch::class);
-        });
-
-        $this->assertNotNull($pruneUrlResearchEvent, 'UrlResearch prune command should be scheduled');
-        $this->assertStringContainsString('model:prune', $pruneUrlResearchEvent->command ?? '');
-    }
-
-    /**
-     * Test model:prune for UrlResearch runs daily at midnight.
-     */
-    public function test_url_research_prune_runs_daily_at_midnight(): void
-    {
-        $schedule = $this->getSchedule();
-        $events = collect($schedule->events());
-
-        $pruneUrlResearchEvent = $events->first(function ($event) {
-            $command = $event->command ?? '';
-
-            return str_contains($command, 'model:prune') &&
-                   str_contains($command, UrlResearch::class);
-        });
-
-        $this->assertNotNull($pruneUrlResearchEvent);
-
-        // Test at midnight
-        Carbon::setTestNow('2025-12-28 00:00:00');
-        $this->assertTrue($pruneUrlResearchEvent->isDue($this->app), 'Should run at midnight');
-
-        // Test at other times
-        Carbon::setTestNow('2025-12-28 15:00:00');
-        $this->assertFalse($pruneUrlResearchEvent->isDue($this->app), 'Should not run at 3 PM');
-    }
-
-    /**
      * Test sanctum:prune-expired command is scheduled daily.
      */
     public function test_sanctum_prune_expired_command_is_scheduled_daily(): void
@@ -384,20 +338,12 @@ class ScheduleTest extends TestCase
                    str_contains($command, LogMessage::class);
         })->count();
 
-        $urlResearchPruneCount = $events->filter(function ($event) {
-            $command = $event->command ?? '';
-
-            return str_contains($command, 'model:prune') &&
-                   str_contains($command, UrlResearch::class);
-        })->count();
-
         $sanctumPruneCount = $events->filter(function ($event) {
             return str_contains($event->command ?? '', 'sanctum:prune-expired');
         })->count();
 
         $this->assertEquals(1, $fetchAllCount, 'Should have exactly 1 FetchAll scheduled task');
         $this->assertEquals(1, $logMessagePruneCount, 'Should have exactly 1 LogMessage prune task');
-        $this->assertEquals(1, $urlResearchPruneCount, 'Should have exactly 1 UrlResearch prune task');
         $this->assertEquals(1, $sanctumPruneCount, 'Should have exactly 1 Sanctum prune task');
     }
 }

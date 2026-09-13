@@ -12,7 +12,6 @@ use App\Filament\Actions\Notifications\TestDiscordAction;
 use App\Filament\Actions\Notifications\TestGotifyAction;
 use App\Filament\Actions\Notifications\TestTelegramAction;
 use App\Filament\Traits\FormHelperTrait;
-use App\Models\UrlResearch;
 use App\Rules\ValidCron;
 use App\Services\AiService;
 use App\Services\Helpers\CurrencyHelper;
@@ -20,7 +19,6 @@ use App\Services\Helpers\IntegrationHelper;
 use App\Services\Helpers\LocaleHelper;
 use App\Services\Helpers\ScheduleHelper;
 use App\Services\OllamaService;
-use App\Services\SearchService;
 use App\Settings\AppSettings;
 use Filament\Forms\Components\Actions\Action;
 use Filament\Forms\Components\Group;
@@ -187,7 +185,6 @@ class AppSettingsPage extends SettingsPage
                         ->icon('heroicon-o-magnifying-glass')
                         ->schema([
                             $this->getScrapeSection(),
-                            $this->getSearXngSettings(),
                         ]),
 
                     Tabs\Tab::make('Notifications')
@@ -461,66 +458,6 @@ class AppSettingsPage extends SettingsPage
                     ->hintIcon(Icons::Help->value, __('Optional. Only needed for protected self-hosted servers.')),
             ],
             __('Push notifications via ntfy. Each user subscribes to their own topic in their profile.'),
-            flat: true
-        );
-    }
-
-    protected function getSearXngSettings(): Group
-    {
-        return self::makeSettingsSection(
-            'SearXng',
-            self::INTEGRATED_SERVICES_KEY,
-            IntegratedServices::SearXng->value,
-            [
-                TextInput::make('url')
-                    ->label('SearXng url')
-                    ->placeholder('https://searxng.homelab.com/search')
-                    ->hintIcon(Icons::Help->value, __('Url of your SearXng instance, including the search path'))
-                    ->required(),
-                TextInput::make('search_prefix')
-                    ->label('Search prefix')
-                    ->placeholder('Buy')
-                    ->hintIcon(Icons::Help->value, __('Text to prepend to the product name when searching'))
-                    ->nullable(),
-                TextInput::make('max_priced_results')
-                    ->label('Stop after this many priced results')
-                    ->hintIcon(Icons::Help->value, __('Search will stop once this many results with detected prices have been found'))
-                    ->integer()
-                    ->minValue(1)
-                    ->required()
-                    ->default(SearchService::DEFAULT_MAX_PRICED_RESULTS),
-                Select::make('prune_days')
-                    ->label('Cache duration')
-                    ->required()
-                    ->hintIcon(Icons::Help->value, __('How long to keep the parsed search results in the cache'))
-                    ->options([
-                        1 => '1 day',
-                        7 => '7 days',
-                        14 => '14 days',
-                        30 => '30 days',
-                        90 => '90 days',
-                        180 => '180 days',
-                        365 => '365 days',
-                    ])
-                    ->default(UrlResearch::DEFAULT_PRUNE_DAYS),
-                Select::make('max_pages')
-                    ->label('How many pages of results to fetch')
-                    ->required()
-                    ->hintIcon(Icons::Help->value, __('The more pages you fetch, the longer it will take to search'))
-                    ->options(options: [
-                        1 => '1 page',
-                        2 => '2 pages',
-                        3 => '3 pages',
-                        4 => '4 pages',
-                        5 => '5 pages',
-                        10 => '10 pages',
-                        20 => '20 pages',
-                        50 => '50 pages',
-                        100 => '100 pages',
-                    ])
-                    ->default(SearchService::DEFAULT_MAX_PAGES),
-            ],
-            new HtmlString('Automatically search for additional products urls via <a href="https://searxng.org/" target="_blank">SearXng</a>'),
             flat: true
         );
     }

@@ -1,6 +1,5 @@
 <?php
 
-use App\Models\AgentStrategy;
 use App\Models\Tag;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -15,7 +14,7 @@ return new class extends Migration
     {
         Schema::create('agent_strategy_tag', function (Blueprint $table) {
             $table->id();
-            $table->foreignIdFor(AgentStrategy::class)->constrained()->cascadeOnDelete();
+            $table->foreignId('agent_strategy_id')->constrained('agent_strategies')->cascadeOnDelete();
             $table->foreignIdFor(Tag::class)->constrained()->cascadeOnDelete();
             $table->timestamps();
 

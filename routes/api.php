@@ -22,3 +22,11 @@ Route::get('/client-config', ClientConfigController::class)
 Route::post('/discovery/candidates', DiscoveryCandidateController::class)
     ->middleware(['auth:sanctum', 'ability:'.ApiAbility::DiscoveryCandidatesIngest->value])
     ->name('api.discovery.candidates.ingest');
+
+Route::post('/discovery/candidates/check', [DiscoveryCandidateController::class, 'check'])
+    ->middleware(['auth:sanctum', 'ability:'.ApiAbility::DiscoveryCandidatesIngest->value])
+    ->name('api.discovery.candidates.check');
+
+Route::post('/discovery/candidates/images', [DiscoveryCandidateController::class, 'images'])
+    ->middleware(['auth:sanctum', 'ability:'.ApiAbility::DiscoveryCandidatesIngest->value])
+    ->name('api.discovery.candidates.images');

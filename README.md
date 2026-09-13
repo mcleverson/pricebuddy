@@ -46,17 +46,13 @@ PriceBuddy can calculate price per unit, so a 10-pack and a 3-pack can be compar
 
 Bring your own OpenAI, Anthropic, Gemini or local Ollama provider. PriceBuddy can use AI to recover missing data from a page or help repair scraping rules. It is optional and off by default.
 
-### Search for products to track
-
-Connect a [SearXNG](https://github.com/searxng/searxng) instance and search for products from inside PriceBuddy.
-
 ### Organise a shared watchlist
 
 Use tags, filters and multi-user accounts so each person can track their own products, targets and notification preferences.
 
 ### Discover deals with the Hermes agent
 
-Create agent strategies in the admin panel to tell the Hermes discovery agent which store to browse, which niche (tags) to target, which starting URLs to visit, and the minimum discount to look for. Run a single strategy or all of them in sequence from the CLI.
+Set a store's access mode to **Agentic** to tell the Hermes discovery agent which niche (tags) to target, which starting URLs to visit, and the minimum discount to look for. Run a single store or all agentic stores in sequence from the CLI.
 
 ### Host it yourself
 
@@ -109,37 +105,42 @@ The Docker image includes the scheduler needed for background work: checking pri
 
 ## Discovery agent (Hermes)
 
-Hermes is an LLM-driven browser agent that explores configured stores and sends product candidates back to PriceBuddy. You control its behaviour through **Agent Strategies** in the admin panel under **Agent Strategy**.
+Hermes is an LLM-driven browser agent that explores configured stores and sends product candidates back to PriceBuddy. You control its behaviour from the store's own **Product data access** card: set **Access mode** to **Agentic** and an **Agentic discovery** section appears.
 
-Each strategy defines:
+That section defines:
 
 | Field | Purpose |
 | --- | --- |
-| Store | Which store the agent should browse. |
 | Niche (Tags) | Tags attached to any product the agent collects. |
 | Visit URLs | Ordered list of pages the agent should start from. |
-| Maximum products | Maximum candidates the agent should collect. |
-| Minimum discount (%) | Minimum discount percentage for a candidate to be accepted. |
+| Minimum new products | Minimum number of new products confirmed created for the token owner. Existing products and failed insertions do not count; the current page is finished before stopping. |
+| Minimum discount (%) | Apparent discount from visible current/original prices. Real deal classification belongs to PriceBuddy. |
 
-Run a strategy from the host:
+Run a store through Docker Compose:
 
 ```shell
-php artisan buddy:agent-strategy-run <id>
+docker compose exec app php artisan buddy:agent-strategy-run <store id or name>
 ```
 
-Run all strategies in sequence:
+Run every agentic store in sequence:
 
 ```shell
-php artisan buddy:agent-strategy-run --all
+docker compose exec app php artisan buddy:agent-strategy-run --all
 ```
 
 Preview what would be executed without running it:
 
 ```shell
-php artisan buddy:agent-strategy-run <id> --dry-run
+docker compose exec app php artisan buddy:agent-strategy-run <store id or name> --dry-run
 ```
 
-The command runs the Hermes container (`hermes_agent`) with the strategy values passed as environment variables and CLI arguments. Make sure Docker is available in the environment where you run the command.
+The command calls the internal Hermes HTTP service (`HERMES_URL`). Set `PRICEBUDDY_API_TOKEN` in the project `.env` to a token with the discovery ability; the Compose services forward it to Hermes.
+
+Hermes reads candidates in page batches and checks `/api/discovery/candidates/check` against the token owner's entire catalog using PriceBuddy's existing URL normalization. Known URLs are skipped before opening product pages. New candidates are enriched in a separate tab and submitted immediately. Only API-confirmed creations count toward `min_products`.
+
+The controller follows the configured URLs in order, advances through observed next-page/load-more controls or scrolling, and detects repeated content. Visible demand signals and apparent discounts guide candidate ordering; no historical discount classification is performed. `HERMES_MAX_PAGES` (default 15 listing observations) and `HERMES_RUN_TIMEOUT_SECONDS` (default 600) remain safety limits. Runs that stop before the minimum return `incomplete`, with source states and navigation steps.
+
+The command saves each returned report under `storage/app/private/hermes/reports/` and prints its path. Standalone agent runs use `--min-products` / `HERMES_MIN_PRODUCTS`.
 
 ## Settings and configuration
 

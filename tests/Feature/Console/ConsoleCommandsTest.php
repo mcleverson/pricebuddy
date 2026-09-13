@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\Console;
 
-use App\Console\Commands\BuildSearchResearch;
 use App\Console\Commands\CreateStores;
 use App\Console\Commands\FetchAll;
 use App\Console\Commands\InitDatabase;
@@ -52,13 +51,6 @@ class ConsoleCommandsTest extends TestCase
     public function test_regenerate_price_cache_command_handles_empty_products()
     {
         $this->artisan(RegeneratePriceCache::COMMAND)
-            ->assertExitCode(0);
-    }
-
-    public function test_build_search_research_command_with_product_name()
-    {
-        // Command should run successfully even if no search sources are available
-        $this->artisan(BuildSearchResearch::COMMAND, ['product_name' => 'laptop'])
             ->assertExitCode(0);
     }
 

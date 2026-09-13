@@ -6,11 +6,13 @@ use App\Enums\ApiAbility;
 use App\Models\Price;
 use App\Models\Product;
 use App\Models\Store;
-use App\Models\Tag;
 use App\Models\Url;
 use App\Models\User;
+use App\Services\Scraping\ScrapeFetchResult;
+use App\Services\Scraping\ScrapingGateway;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Jez500\WebScraperForLaravel\WebScraperFake;
 use Tests\TestCase;
 
 class DiscoveryCandidateApiTest extends TestCase
@@ -36,6 +38,95 @@ class DiscoveryCandidateApiTest extends TestCase
         )->plainTextToken;
 
         $this->withHeaders(['Authorization' => 'Bearer '.$token]);
+    }
+
+    public function test_batch_lookup_normalizes_urls_and_only_checks_the_current_users_catalog(): void
+    {
+        Http::fake();
+        $mine = Product::factory()->create([
+            'user_id' => $this->user->id,
+            'image' => 'https://example.com/known.jpg',
+        ]);
+        Url::factory()->create([
+            'product_id' => $mine->id, 'store_id' => $this->store->id,
+            'url' => 'https://example.com/known',
+        ]);
+        Url::factory()->create([
+            'product_id' => Product::factory()->create()->id, 'store_id' => $this->store->id,
+            'url' => 'https://example.com/other-user',
+        ]);
+        $pricesBefore = Price::count();
+        $this->postJson('/api/discovery/candidates/check', ['urls' => [
+            'https://www.example.com/known?utm_source=hermes',
+            'https://example.com/other-user',
+            'https://example.com/new',
+        ]])->assertOk()
+            ->assertJsonPath('results.0.exists', true)
+            ->assertJsonPath('results.0.has_image', true)
+            ->assertJsonPath('results.0.key', 'example.com/known')
+            ->assertJsonPath('results.1.exists', false)
+            ->assertJsonPath('results.1.has_image', false)
+            ->assertJsonPath('results.2.exists', false);
+        $this->assertSame($pricesBefore, Price::count());
+        Http::assertNothingSent();
+    }
+
+    public function test_batch_lookup_requires_bounded_valid_urls(): void
+    {
+        $this->postJson('/api/discovery/candidates/check', ['urls' => ['invalid']])
+            ->assertUnprocessable();
+        $this->postJson('/api/discovery/candidates/check', ['urls' => array_fill(0, 101, 'https://example.com/p')])
+            ->assertUnprocessable();
+    }
+
+    public function test_batch_lookup_requires_discovery_authorization(): void
+    {
+        $token = $this->user->createToken('wrong-scope', [ApiAbility::UserDetail->value])->plainTextToken;
+        $this->withHeaders(['Authorization' => 'Bearer '.$token])
+            ->postJson('/api/discovery/candidates/check', ['urls' => ['https://example.com/p']])
+            ->assertForbidden();
+    }
+
+    public function test_batch_lookup_reports_an_existing_product_without_an_image(): void
+    {
+        $product = Product::factory()->create(['user_id' => $this->user->id, 'image' => null]);
+        Url::factory()->create([
+            'product_id' => $product->id,
+            'store_id' => $this->store->id,
+            'url' => 'https://example.com/missing-image',
+        ]);
+
+        $this->postJson('/api/discovery/candidates/check', [
+            'urls' => ['https://www.example.com/missing-image?utm_source=hermes'],
+        ])->assertOk()
+            ->assertJsonPath('results.0.exists', true)
+            ->assertJsonPath('results.0.has_image', false);
+    }
+
+    public function test_can_resolve_mercado_livre_candidate_image_from_the_structured_listing(): void
+    {
+        $listingUrl = 'https://www.mercadolivre.com.br/ofertas';
+        $candidateUrl = 'https://www.mercadolivre.com.br/smart-tv/p/MLB12345'
+            .'?pdp_filters=deal%3AX&tracking_id=hermes';
+        $listingCandidateUrl = 'https://www.mercadolivre.com.br/smart-tv/p/MLB12345'
+            .'?pdp_filters=deal%3AX&tracking_id=scraper';
+        $imageUrl = 'https://http2.mlstatic.com/D_Q_NP_2X_756409-MLA115252629948_082026-AB.webp';
+        $page = (new WebScraperFake)->setBody(<<<HTML
+            <div class="product-card">
+                <img src="{$imageUrl}" alt="Smart TV">
+                <div><h3><a href="{$listingCandidateUrl}">Smart TV</a></h3></div>
+            </div>
+            HTML);
+        $gateway = \Mockery::mock(ScrapingGateway::class);
+        $gateway->shouldReceive('fetch')->once()->andReturn(new ScrapeFetchResult($page));
+        $this->app->instance(ScrapingGateway::class, $gateway);
+
+        $this->postJson('/api/discovery/candidates/images', [
+            'listing_url' => $listingUrl,
+            'urls' => [$candidateUrl],
+        ])->assertOk()
+            ->assertJsonPath('results.0.url', $candidateUrl)
+            ->assertJsonPath('results.0.image', $imageUrl);
     }
 
     public function test_can_ingest_a_candidate_with_optional_fields(): void

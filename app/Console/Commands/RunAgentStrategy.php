@@ -2,11 +2,14 @@
 
 namespace App\Console\Commands;
 
-use App\Models\AgentStrategy;
+use App\Enums\AccessMode;
+use App\Models\Store;
+use App\Services\Scraping\MarketplaceStrategyResolver;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\PromptsForMissingInput;
-use Illuminate\Process\Exceptions\ProcessFailedException;
-use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 
 use function Laravel\Prompts\select;
@@ -18,172 +21,206 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     /**
      * The name and signature of the console command.
      */
-    protected $signature = self::COMMAND.' {strategy? : The ID or name of the strategy}'.
-        ' {--all : Run all strategies in sequence}'.
+    protected $signature = self::COMMAND.' {store? : The ID or name of the store}'.
+        ' {--all : Run all stores in agentic mode, in sequence}'.
         ' {--dry-run : Show the command instead of executing it}';
 
     /**
      * The console command description.
      */
-    protected $description = 'Run Hermes agent using a registered agent strategy';
+    protected $description = 'Run Hermes agentic discovery for a store configured with access_mode=agentic';
 
     /**
      * Execute the console command.
      */
-    public function handle(): int
+    public function handle(MarketplaceStrategyResolver $marketplaceStrategies): int
     {
-        $strategies = $this->resolveStrategies();
+        $stores = $this->resolveStores();
 
-        if ($strategies->isEmpty()) {
-            $this->warn('No agent strategy found.');
+        if ($stores->isEmpty()) {
+            $this->warn('No agentic store found.');
 
             return SymfonyCommand::FAILURE;
         }
 
-        foreach ($strategies as $strategy) {
-            if (! $this->runStrategy($strategy)) {
-                return SymfonyCommand::FAILURE;
-            }
+        $results = [];
+        foreach ($stores as $store) {
+            $results[] = $this->runStrategy($store, $marketplaceStrategies);
         }
 
-        return SymfonyCommand::SUCCESS;
+        $this->displaySummary($results);
+
+        $hasFailure = collect($results)->contains(fn (array $result) => ! $result['success']);
+
+        return $hasFailure ? SymfonyCommand::FAILURE : SymfonyCommand::SUCCESS;
     }
 
     /**
-     * @return \Illuminate\Support\Collection<int, AgentStrategy>
+     * @return \Illuminate\Support\Collection<int, Store>
      */
-    protected function resolveStrategies(): \Illuminate\Support\Collection
+    protected function resolveStores(): \Illuminate\Support\Collection
     {
+        $agentic = fn () => Store::query()
+            ->where('access_mode', AccessMode::Agentic)
+            ->with('tags')
+            ->get();
+
         if ($this->option('all')) {
-            return AgentStrategy::with(['store', 'tags'])->get();
+            return $agentic();
         }
 
-        $identifier = $this->argument('strategy');
-
+        $identifier = $this->argument('store');
 
         if ($identifier === null) {
-            $strategies = AgentStrategy::with(['store', 'tags'])->get();
+            $stores = $agentic();
 
-            if ($strategies->isEmpty()) {
-                return $strategies;
+            if ($stores->isEmpty()) {
+                return $stores;
             }
 
             $selectedId = select(
-                label: 'Which strategy would you like to run?',
-                options: $strategies->mapWithKeys(fn (AgentStrategy $strategy) => [
-                    $strategy->id => $strategy->name,
+                label: 'Which store would you like to run?',
+                options: $stores->mapWithKeys(fn (Store $store) => [
+                    $store->id => $store->name,
                 ])->all(),
             );
 
-            return $strategies->where('id', $selectedId);
+            return $stores->where('id', $selectedId);
         }
 
-        $strategy = AgentStrategy::with(['store', 'tags'])
-            ->where('id', $identifier)
-            ->orWhere('name', $identifier)
+        $store = Store::query()
+            ->where('access_mode', AccessMode::Agentic)
+            ->with('tags')
+            ->where(fn ($query) => $query->where('id', $identifier)->orWhere('name', $identifier))
             ->first();
 
-        if ($strategy === null) {
+        if ($store === null) {
             return collect();
         }
 
-        return collect([$strategy]);
+        return collect([$store]);
     }
 
-    protected function runStrategy(AgentStrategy $strategy): bool
+    protected function runStrategy(
+        Store $store,
+        MarketplaceStrategyResolver $marketplaceStrategies,
+    ): array
     {
-        $this->info("Running strategy: {$strategy->name}");
+        $this->info("Running agentic discovery for store: {$store->name}");
 
-        $urls = collect($strategy->urls)
+        $urls = collect($store->agent_urls)
             ->pluck('url')
             ->filter()
             ->values();
 
         if ($urls->isEmpty()) {
-            $this->warn("Strategy [{$strategy->name}] has no URLs to visit.");
+            $this->warn("Store [{$store->name}] has no agent URLs to visit.");
 
-            return false;
+            return ['success' => false, 'store' => $store, 'report' => []];
         }
 
-        $allowedHosts = $strategy->allowedHosts();
-        $tagNames = $strategy->tags->pluck('name')->implode(',');
-        $goal = "Encontre ofertas de {$tagNames} em {$strategy->store->name}";
+        $allowedHosts = $store->allowedHosts();
+        $tagNames = $store->tags->pluck('name')->implode(',');
+        $goal = "Encontre ofertas de {$tagNames} em {$store->name}";
+        $marketplaceStrategy = $marketplaceStrategies->resolve($urls->first());
 
-        $envs = [
-            'HERMES_STORE_ID' => (string) $strategy->store_id,
-            'HERMES_MIN_DISCOUNT_PERCENTAGE' => (string) $strategy->min_discount_percentage,
-            'HERMES_MAX_RAW_CANDIDATES' => (string) $strategy->max_products,
-            'HERMES_MAX_SELECTED_CANDIDATES' => (string) $strategy->max_products,
-            'HERMES_DEFAULT_TAG' => $tagNames,
-            'HERMES_ALLOWED_HOSTS' => implode(',', $allowedHosts),
+        $payload = [
+            'marketplace' => $store->name,
+            'marketplace_strategy' => $marketplaceStrategy->key(),
+            'agent_options' => $marketplaceStrategy->agentOptions($urls->first()),
+            'goal' => $goal,
+            'urls' => $urls->values()->all(),
+            'tags' => $store->tags->pluck('name')->values()->all(),
+            'allowed_hosts' => $allowedHosts,
+            'store_id' => $store->id,
+            'min_products' => $store->agent_max_products,
+            'min_discount_percentage' => $store->agent_min_discount_percentage,
         ];
 
-        $command = $this->buildDockerCommand($strategy, $goal, $urls);
-
         if ($this->option('dry-run')) {
-            $this->info("Environment:");
-            foreach ($envs as $key => $value) {
-                $this->line("  {$key}={$value}");
-            }
-            $this->info("Command: {$command}");
+            $this->info('Hermes payload:');
+            $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-            return true;
+            return ['success' => true, 'store' => $store, 'report' => ['status' => 'dry-run']];
         }
 
         try {
-            $result = Process::env($envs)->timeout(1200)->run($command, function (string $type, string $line) {
-                $this->output->write($line);
-            });
+            $response = Http::timeout(1200)
+                ->post(config('services.hermes.url', 'http://hermes:8000').'/discover', $payload);
 
-            if (! $result->successful()) {
-                $this->error("Strategy [{$strategy->name}] failed with exit code {$result->exitCode()}");
+            if (! $response->successful()) {
+                $this->error("Store [{$store->name}] failed with HTTP status {$response->status()}");
+                $this->error($response->body());
 
-                return false;
+                return ['success' => false, 'store' => $store, 'report' => []];
             }
 
-            $this->info("Strategy [{$strategy->name}] completed.");
+            $report = $response->json();
+            $reportPath = 'hermes/reports/'.now()->format('Ymd-His').'-'.Str::uuid().'.json';
+            $saved = Storage::disk('local')->put($reportPath, json_encode([
+                'store_id' => $store->id,
+                'store_name' => $store->name,
+                'report' => $report,
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            if ($saved) {
+                $this->line('Report saved: '.Storage::disk('local')->path($reportPath));
+            } else {
+                $this->warn('Could not persist the discovery report.');
+            }
 
-            return true;
-        } catch (ProcessFailedException $exception) {
-            $this->error("Strategy [{$strategy->name}] failed: {$exception->getMessage()}");
+            if (($report['status'] ?? null) === 'incomplete') {
+                $this->warn('Minimum new products not reached: '.($report['abort_reason'] ?? 'sources exhausted'));
+                $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-            return false;
+                return ['success' => false, 'store' => $store, 'report' => $report];
+            }
+
+            if (isset($report['status']) && $report['status'] === 'error') {
+                $this->error("Store [{$store->name}] failed: ".($report['error'] ?? 'unknown error'));
+
+                return ['success' => false, 'store' => $store, 'report' => $report];
+            }
+
+            $this->info("Store [{$store->name}] completed.");
+            $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+            return ['success' => true, 'store' => $store, 'report' => $report];
+        } catch (\Exception $exception) {
+            $this->error("Store [{$store->name}] failed: {$exception->getMessage()}");
+
+            return ['success' => false, 'store' => $store, 'report' => []];
         }
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, string>  $urls
+     * Display a summary of all store executions.
+     *
+     * @param  array<int, array{success: bool, store: Store, report: array}>  $results
      */
-    protected function buildDockerCommand(AgentStrategy $strategy, string $goal, \Illuminate\Support\Collection $urls): string
+    protected function displaySummary(array $results): void
     {
-        $parts = [
-            'docker',
-            'compose',
-            '--profile',
-            'agent',
-            'run',
-            '--rm',
-            'hermes_agent',
-            'python',
-            'src/agent.py',
-            '--marketplace',
-            escapeshellarg($strategy->store->name),
-            '--goal',
-            escapeshellarg($goal),
-        ];
+        $this->newLine();
+        $this->info('=== Agentic Discovery Run Summary ===');
 
-        foreach ($urls as $url) {
-            $parts[] = '--urls';
-            $parts[] = escapeshellarg($url);
+        foreach ($results as $result) {
+            $store = $result['store'];
+            $report = $result['report'];
+            $status = $result['success'] ? 'completed' : ($report['status'] ?? 'error');
+            $created = $report['total_candidates'] ?? 0;
+            $target = $report['min_products'] ?? $store->agent_max_products;
+            $abortReason = $report['abort_reason'] ?? null;
+
+            $this->line(sprintf(
+                '%s: %s (created: %d/%d)%s',
+                $store->name,
+                $status,
+                $created,
+                $target,
+                $abortReason ? " — {$abortReason}" : ''
+            ));
         }
 
-        $parts[] = '--max-raw-candidates';
-        $parts[] = (string) $strategy->max_products;
-        $parts[] = '--max-selected-candidates';
-        $parts[] = (string) $strategy->max_products;
-        $parts[] = '--min-discount-percentage';
-        $parts[] = (string) $strategy->min_discount_percentage;
-
-        return implode(' ', $parts);
+        $failed = count(array_filter($results, fn ($r) => ! $r['success']));
+        $this->line(sprintf('Total: %d stores, %d failed.', count($results), $failed));
     }
 }

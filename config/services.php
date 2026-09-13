@@ -39,4 +39,8 @@ return [
         'token' => env('PUSHOVER_APP_TOKEN'),
     ],
 
+    'hermes' => [
+        'url' => env('HERMES_URL', 'http://hermes:8000'),
+    ],
+
 ];

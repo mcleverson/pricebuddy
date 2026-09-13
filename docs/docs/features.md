@@ -115,10 +115,12 @@ everyone controls how they're notified.
 
 Support for light and dark mode. Fully mobile friendly and easy to use.
 
-## Integration with SearXNG
+## Agentic discovery with Hermes
 
-Use your instance of [SearXNG](https://github.com/searxng/searxng) to make it 
-easier to search for products and add urls within the app.
+Set a store's [access mode](./stores.md#access-mode) to **Agentic** and PriceBuddy's
+Hermes browser agent autonomously explores that store's listing pages, looking
+for new products that match your niche (tags) and minimum discount, and adds
+them to your catalog for you.
 
 ## Open source and self-hostable
 

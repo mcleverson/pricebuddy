@@ -19,30 +19,6 @@ class AppSettingsPageTest extends TestCase
         $this->actingAs(User::factory()->admin()->create());
     }
 
-    public function test_max_priced_results_rejects_non_integer_values()
-    {
-        Livewire::test(AppSettingsPage::class)
-            ->fillForm([
-                'integrated_services.searxng.enabled' => true,
-                'integrated_services.searxng.url' => 'https://searxng.example.com/search',
-                'integrated_services.searxng.max_priced_results' => 2.5,
-            ])
-            ->call('save')
-            ->assertHasFormErrors(['integrated_services.searxng.max_priced_results' => 'integer']);
-    }
-
-    public function test_max_priced_results_accepts_integer_values()
-    {
-        Livewire::test(AppSettingsPage::class)
-            ->fillForm([
-                'integrated_services.searxng.enabled' => true,
-                'integrated_services.searxng.url' => 'https://searxng.example.com/search',
-                'integrated_services.searxng.max_priced_results' => 3,
-            ])
-            ->call('save')
-            ->assertHasNoFormErrors(['integrated_services.searxng.max_priced_results']);
-    }
-
     public function test_settings_page_renders_the_tabs(): void
     {
         Livewire::test(AppSettingsPage::class)
@@ -80,8 +56,8 @@ class AppSettingsPageTest extends TestCase
     public function test_retry_settings_save_without_error(): void
     {
         // Mirrors test_a_general_tab_field_saves_without_error: this page's full
-        // save can be blocked by unrelated required fields (e.g. SearXng), so we
-        // assert only that the retry fields themselves accept valid input.
+        // save can be blocked by unrelated required fields, so we assert only
+        // that the retry fields themselves accept valid input.
         Livewire::test(AppSettingsPage::class)
             ->fillForm([
                 'scrape_retry_max_attempts' => 4,
