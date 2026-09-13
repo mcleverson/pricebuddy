@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\ProductDataProvider;
 use App\Enums\AccessMode;
 use App\Enums\AiFeature;
 use App\Enums\Icons;
@@ -88,6 +89,7 @@ class StoreResource extends Resource
                         ->label('Marketplace')
                         ->options(fn (): array => app(MarketplaceRegistry::class)->options())
                         ->placeholder('Auto-detect from domain')
+                        ->live()
                         ->hintIcon(Icons::Help->value, 'Optional explicit marketplace identity used to select an API provider'),
                     Select::make('access_mode')
                         ->label('Collection Mode')
@@ -98,17 +100,24 @@ class StoreResource extends Resource
                         ->hintIcon(Icons::Help->value, 'Api requires a configured provider for this marketplace; Scraping visits product pages directly; Agentic autonomously discovers new products via Hermes'),
                 ])->columns(2),
 
+                Section::make('Api credentials')
+                    ->description('Credentials this marketplace\'s API needs.')
+                    ->schema(fn (Get $get): array => self::apiCredentialFields($get('marketplace_id')))
+                    ->statePath('settings.api_credentials')
+                    ->columns(2)
+                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Api->value),
+
                 Section::make('Proxy')
                     ->description('Proxy settings used when scraping this store. Most major marketplaces block unproxied scraping.')
                     ->schema(self::proxyFormFields())
                     ->columns(2)
                     ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Scraping->value),
 
-                Section::make('Agentic discovery')
-                    ->description('Hermes autonomously browses these pages looking for new products matching the criteria below')
+                Section::make('Discovery')
+                    ->description('Finds new products matching this niche. Agentic browses the URLs below with Hermes; Api queries the marketplace directly, when it supports discovery.')
                     ->schema(self::agenticFormFields())
                     ->columns(2)
-                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value),
+                    ->visible(fn (Get $get): bool => in_array($get('access_mode'), [AccessMode::Agentic->value, AccessMode::Api->value], true)),
 
                 Forms\Components\Group::make([
                     Section::make('Title strategy')->schema([
@@ -193,6 +202,36 @@ class StoreResource extends Resource
     }
 
     /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function apiCredentialFields(?string $marketplaceId): array
+    {
+        $providerClass = $marketplaceId !== null
+            ? (string) config('product_data.providers.'.$marketplaceId)
+            : '';
+
+        if ($providerClass === '' || ! is_a($providerClass, ProductDataProvider::class, true)) {
+            return [
+                Forms\Components\Placeholder::make('no_api_provider')
+                    ->hiddenLabel()
+                    ->content($marketplaceId === null
+                        ? 'Select a Marketplace above to configure its API credentials.'
+                        : 'No API integration is implemented for this marketplace yet.'),
+            ];
+        }
+
+        $fields = $providerClass::credentialFields();
+
+        return $fields === []
+            ? [
+                Forms\Components\Placeholder::make('no_api_credentials')
+                    ->hiddenLabel()
+                    ->content('This marketplace\'s API integration needs no credentials.'),
+            ]
+            : $fields;
+    }
+
+    /**
      * @return \Closure(Get): bool
      */
     protected static function isScrapingMode(): \Closure
@@ -215,18 +254,21 @@ class StoreResource extends Resource
     }
 
     /**
+     * Niche/target fields shared by Agentic (Hermes) and Api-driven discovery —
+     * both ultimately loop over the same Store.tags to find new candidates,
+     * they just differ in how they search (browsing configured URLs vs
+     * querying the marketplace's API per niche).
+     *
      * @return array<int, \Filament\Forms\Components\Component>
      */
-    protected static function agenticFormFields(): array
+    protected static function discoveryFormFields(\Closure $isRequired): array
     {
-        $isAgentic = fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value;
-
         return [
             Select::make('tags')
                 ->label('Niche (Tags)')
                 ->relationship('tags', 'name')
                 ->multiple()
-                ->required($isAgentic)
+                ->required($isRequired)
                 ->preload()
                 ->searchable()
                 ->columnSpanFull(),
@@ -238,7 +280,7 @@ class StoreResource extends Resource
                 ->integer()
                 ->minValue(1)
                 ->default(10)
-                ->required($isAgentic),
+                ->required($isRequired),
 
             TextInput::make('agent_min_discount_percentage')
                 ->label('Minimum discount (%)')
@@ -247,8 +289,25 @@ class StoreResource extends Resource
                 ->maxValue(100)
                 ->default(20)
                 ->suffix('%')
-                ->required($isAgentic),
+                ->required($isRequired),
+        ];
+    }
 
+    /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function agenticFormFields(): array
+    {
+        $isAgentic = fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value;
+        $isAgenticOrApi = fn (Get $get): bool => in_array($get('access_mode'), [
+            AccessMode::Agentic->value, AccessMode::Api->value,
+        ], true);
+
+        return [
+            ...self::discoveryFormFields($isAgenticOrApi),
+
+            // Only Agentic (Hermes) browses starting URLs; Api-driven discovery
+            // queries the marketplace directly by niche instead.
             Forms\Components\Repeater::make('agent_urls')
                 ->label('Visit URLs')
                 ->hintIcon(Icons::Help->value, 'URLs the agent should visit, in priority order')
@@ -264,6 +323,7 @@ class StoreResource extends Resource
                 ->minItems(1)
                 ->itemLabel(fn (array $state): ?string => $state['url'] ?? null)
                 ->required($isAgentic)
+                ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Agentic->value)
                 ->columnSpanFull(),
         ];
     }

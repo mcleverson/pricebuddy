@@ -70,6 +70,7 @@ class Url extends Model
             'updated_at' => 'datetime',
             'created_at' => 'datetime',
             'availability' => StockStatus::class,
+            'affiliate_url_synced_at' => 'datetime',
         ];
     }
 
@@ -118,7 +119,9 @@ class Url extends Model
     protected function buyUrl(): Attribute
     {
         return Attribute::make(
-            get: fn () => AffiliateHelper::new()->parseUrl($this->url)
+            get: fn () => filled($this->affiliate_url)
+                ? $this->affiliate_url
+                : AffiliateHelper::new()->parseUrl($this->url)
         );
     }
 
@@ -309,11 +312,38 @@ class Url extends Model
             return [];
         }
 
-        return resolve(ProductDataGateway::class)->productDetails(
+        $result = resolve(ProductDataGateway::class)->productDetails(
             $this->store,
             $this->url,
             fn (): array => ScrapeUrl::new($this->url)->scrape(),
         );
+
+        $this->refreshAffiliateUrl();
+
+        return $result;
+    }
+
+    /**
+     * Refresh the cached API-generated affiliate link (e.g. Shopee), at most
+     * once a day, so buy_url doesn't need a live network call on every view.
+     * A no-op for stores whose access mode/provider doesn't produce one.
+     */
+    protected function refreshAffiliateUrl(): void
+    {
+        if ($this->affiliate_url_synced_at?->gt(now()->subDay())) {
+            return;
+        }
+
+        try {
+            $link = resolve(ProductDataGateway::class)->affiliateLink($this->store, $this->url);
+        } catch (\Throwable) {
+            return;
+        }
+
+        $this->forceFill([
+            'affiliate_url' => $link,
+            'affiliate_url_synced_at' => now(),
+        ])->saveQuietly();
     }
 
     public function getAvailabilityStatus(): ?StockStatus

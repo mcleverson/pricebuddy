@@ -41,6 +41,32 @@ class ProductDataGateway
     }
 
     /**
+     * Resolve a ready-to-use affiliate link for a URL, when this store's access
+     * mode is Api and its provider supports generating one (e.g. Shopee). Callers
+     * are expected to cache the result — this always makes a network call.
+     */
+    public function affiliateLink(Store $store, string $url): ?string
+    {
+        if ($this->accessMode($store) !== AccessMode::Api) {
+            return null;
+        }
+
+        $marketplace = $this->marketplaces->resolve($store->marketplace_id, $url);
+        $provider = $this->providers->resolve($marketplace);
+
+        if ($provider === null
+            || ! $provider->isConfigured($store)
+            || ! $provider->supports($store, ProductDataOperation::AffiliateLink)) {
+            return null;
+        }
+
+        $result = $provider->fetch($store, ProductDataOperation::AffiliateLink, ['store' => $store, 'url' => $url]);
+        $link = is_array($result) ? data_get($result, 'affiliate_url') : null;
+
+        return is_string($link) && $link !== '' ? $link : null;
+    }
+
+    /**
      * @param  array<string, mixed>  $context
      * @param  callable(): mixed  $scrapingFallback
      */
@@ -60,8 +86,8 @@ class ProductDataGateway
         $marketplace = $this->marketplaces->resolve($subject->marketplace_id, $url);
         $provider = $this->providers->resolve($marketplace);
         $available = $provider !== null
-            && $provider->isConfigured()
-            && $provider->supports($operation);
+            && $provider->isConfigured($subject)
+            && $provider->supports($subject, $operation);
 
         if (! $available) {
             if ($mode === AccessMode::Api) {
@@ -75,7 +101,7 @@ class ProductDataGateway
             return $scrapingFallback();
         }
 
-        return $provider->fetch($operation, $context);
+        return $provider->fetch($subject, $operation, $context);
     }
 
     protected function accessMode(Store $subject): AccessMode

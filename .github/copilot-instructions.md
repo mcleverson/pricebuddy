@@ -277,7 +277,7 @@ Entre os fluxos relevantes estão:
 * marketplaces como Shopee, Amazon, Mercado Livre, Magalu e AliExpress;
 * coleta de produtos;
 * stores (access_mode: api, scraping ou agentic);
-* descoberta agêntica via Hermes;
+* descoberta de produtos via Hermes (agentic) ou via API do marketplace (ex.: Shopee);
 * comparação de preços;
 * identificação de preço atual e preço original quando disponível;
 * adaptação para links de afiliados;

@@ -105,7 +105,7 @@ The Docker image includes the scheduler needed for background work: checking pri
 
 ## Discovery agent (Hermes)
 
-Hermes is an LLM-driven browser agent that explores configured stores and sends product candidates back to PriceBuddy. You control its behaviour from the store's own **Product data access** card: set **Access mode** to **Agentic** and an **Agentic discovery** section appears.
+Hermes is an LLM-driven browser agent that explores configured stores and sends product candidates back to PriceBuddy. You control its behaviour from the store's own **Product data access** card: set **Collection Mode** to **Agentic** and a **Discovery** section appears. (A store whose **Api** provider supports discovery — like Shopee — shows the same section and can run through this same command, without Hermes.)
 
 That section defines:
 

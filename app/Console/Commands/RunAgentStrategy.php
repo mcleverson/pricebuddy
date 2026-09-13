@@ -3,10 +3,14 @@
 namespace App\Console\Commands;
 
 use App\Enums\AccessMode;
+use App\Enums\ProductDataOperation;
 use App\Models\Store;
+use App\Services\ProductData\ApiProviderRegistry;
+use App\Services\ProductData\MarketplaceRegistry;
 use App\Services\Scraping\MarketplaceStrategyResolver;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\PromptsForMissingInput;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -22,30 +26,35 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
      * The name and signature of the console command.
      */
     protected $signature = self::COMMAND.' {store? : The ID or name of the store}'.
-        ' {--all : Run all stores in agentic mode, in sequence}'.
+        ' {--all : Run all discovery-eligible stores, in sequence}'.
         ' {--dry-run : Show the command instead of executing it}';
 
     /**
      * The console command description.
      */
-    protected $description = 'Run Hermes agentic discovery for a store configured with access_mode=agentic';
+    protected $description = 'Run product discovery for a store configured with access_mode=agentic (via Hermes) or access_mode=api (via its provider, when supported)';
 
     /**
      * Execute the console command.
      */
-    public function handle(MarketplaceStrategyResolver $marketplaceStrategies): int
-    {
-        $stores = $this->resolveStores();
+    public function handle(
+        MarketplaceStrategyResolver $marketplaceStrategies,
+        MarketplaceRegistry $marketplaces,
+        ApiProviderRegistry $providers,
+    ): int {
+        $stores = $this->resolveStores($marketplaces, $providers);
 
         if ($stores->isEmpty()) {
-            $this->warn('No agentic store found.');
+            $this->warn('No discovery-eligible store found.');
 
             return SymfonyCommand::FAILURE;
         }
 
         $results = [];
         foreach ($stores as $store) {
-            $results[] = $this->runStrategy($store, $marketplaceStrategies);
+            $results[] = $store->access_mode === AccessMode::Api
+                ? $this->runApiDiscovery($store, $marketplaces, $providers)
+                : $this->runAgenticDiscovery($store, $marketplaceStrategies);
         }
 
         $this->displaySummary($results);
@@ -56,23 +65,25 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     }
 
     /**
-     * @return \Illuminate\Support\Collection<int, Store>
+     * @return Collection<int, Store>
      */
-    protected function resolveStores(): \Illuminate\Support\Collection
+    protected function resolveStores(MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): Collection
     {
-        $agentic = fn () => Store::query()
-            ->where('access_mode', AccessMode::Agentic)
+        $eligible = fn () => Store::query()
+            ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
             ->with('tags')
-            ->get();
+            ->get()
+            ->filter(fn (Store $store): bool => $this->isDiscoveryEligible($store, $marketplaces, $providers))
+            ->values();
 
         if ($this->option('all')) {
-            return $agentic();
+            return $eligible();
         }
 
         $identifier = $this->argument('store');
 
         if ($identifier === null) {
-            $stores = $agentic();
+            $stores = $eligible();
 
             if ($stores->isEmpty()) {
                 return $stores;
@@ -85,23 +96,46 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
                 ])->all(),
             );
 
-            return $stores->where('id', $selectedId);
+            return $stores->where('id', $selectedId)->values();
         }
 
         $store = Store::query()
-            ->where('access_mode', AccessMode::Agentic)
+            ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
             ->with('tags')
             ->where(fn ($query) => $query->where('id', $identifier)->orWhere('name', $identifier))
             ->first();
 
-        if ($store === null) {
+        if ($store === null || ! $this->isDiscoveryEligible($store, $marketplaces, $providers)) {
             return collect();
         }
 
         return collect([$store]);
     }
 
-    protected function runStrategy(
+    /**
+     * Agentic stores always run via Hermes. Api stores only run when their
+     * configured provider actually supports Discovery (e.g. Shopee) — otherwise
+     * this command has nothing to do for them (price refresh is a separate,
+     * unrelated flow).
+     */
+    protected function isDiscoveryEligible(Store $store, MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): bool
+    {
+        if ($store->access_mode === AccessMode::Agentic) {
+            return true;
+        }
+
+        if ($store->access_mode !== AccessMode::Api) {
+            return false;
+        }
+
+        $provider = $providers->resolve($marketplaces->resolve($store->marketplace_id));
+
+        return $provider !== null
+            && $provider->isConfigured($store)
+            && $provider->supports($store, ProductDataOperation::Discovery);
+    }
+
+    protected function runAgenticDiscovery(
         Store $store,
         MarketplaceStrategyResolver $marketplaceStrategies,
     ): array
@@ -159,17 +193,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             }
 
             $report = $response->json();
-            $reportPath = 'hermes/reports/'.now()->format('Ymd-His').'-'.Str::uuid().'.json';
-            $saved = Storage::disk('local')->put($reportPath, json_encode([
-                'store_id' => $store->id,
-                'store_name' => $store->name,
-                'report' => $report,
-            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-            if ($saved) {
-                $this->line('Report saved: '.Storage::disk('local')->path($reportPath));
-            } else {
-                $this->warn('Could not persist the discovery report.');
-            }
+            $this->saveReport($store, $report);
 
             if (($report['status'] ?? null) === 'incomplete') {
                 $this->warn('Minimum new products not reached: '.($report['abort_reason'] ?? 'sources exhausted'));
@@ -196,6 +220,130 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     }
 
     /**
+     * Discovery via the store's own API provider (e.g. Shopee), run in-process —
+     * no Hermes involved. Candidates are posted to this same app's own
+     * /discovery/candidates endpoint using PRICEBUDDY_API_TOKEN, exactly like
+     * Hermes does, so ownership/tag-scoping is identical between both paths.
+     */
+    protected function runApiDiscovery(
+        Store $store,
+        MarketplaceRegistry $marketplaces,
+        ApiProviderRegistry $providers,
+    ): array
+    {
+        $this->info("Running API discovery for store: {$store->name}");
+
+        $tags = $store->tags->pluck('name')->values();
+
+        if ($tags->isEmpty()) {
+            $this->warn("Store [{$store->name}] has no niche (tags) configured.");
+
+            return ['success' => false, 'store' => $store, 'report' => []];
+        }
+
+        $target = (int) $store->agent_max_products;
+        $provider = $providers->resolve($marketplaces->resolve($store->marketplace_id));
+
+        if ($this->option('dry-run')) {
+            $this->info('Would query the API for niches: '.$tags->implode(', '));
+
+            return ['success' => true, 'store' => $store, 'report' => ['status' => 'dry-run']];
+        }
+
+        try {
+            $candidates = $provider->fetch($store, ProductDataOperation::Discovery, [
+                'tags' => $tags->all(),
+                'min_discount_percentage' => (float) $store->agent_min_discount_percentage,
+                'target_candidates' => $target,
+            ]);
+        } catch (\Throwable $exception) {
+            $this->error("Store [{$store->name}] failed: {$exception->getMessage()}");
+
+            return ['success' => false, 'store' => $store, 'report' => []];
+        }
+
+        $created = 0;
+        foreach ($candidates as $candidate) {
+            if ($created >= $target) {
+                break;
+            }
+
+            if ($this->ingestCandidate($candidate)) {
+                $created++;
+            }
+        }
+
+        $report = [
+            'status' => $created >= $target ? 'completed' : 'incomplete',
+            'total_candidates' => $created,
+            'min_products' => $target,
+        ];
+
+        $this->saveReport($store, $report);
+
+        if ($created < $target) {
+            $this->warn("Minimum new products not reached for [{$store->name}]: {$created}/{$target}.");
+
+            return ['success' => false, 'store' => $store, 'report' => $report];
+        }
+
+        $this->info("Store [{$store->name}] completed (created: {$created}/{$target}).");
+
+        return ['success' => true, 'store' => $store, 'report' => $report];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    protected function ingestCandidate(array $candidate): bool
+    {
+        $token = config('services.pricebuddy.api_token');
+
+        if (blank($token)) {
+            $this->warn('PRICEBUDDY_API_TOKEN is not configured; cannot ingest API-discovered candidates.');
+
+            return false;
+        }
+
+        $baseUrl = rtrim((string) config('services.pricebuddy.api_base_url', 'http://app/api'), '/');
+
+        try {
+            $response = Http::withToken($token)->post($baseUrl.'/discovery/candidates', $candidate);
+        } catch (\Exception $exception) {
+            $this->warn("Failed to ingest candidate {$candidate['url']}: {$exception->getMessage()}");
+
+            return false;
+        }
+
+        if (! $response->successful()) {
+            $this->warn("Candidate {$candidate['url']} rejected with HTTP status {$response->status()}");
+
+            return false;
+        }
+
+        return (bool) $response->json('created', false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $report
+     */
+    protected function saveReport(Store $store, array $report): void
+    {
+        $reportPath = 'hermes/reports/'.now()->format('Ymd-His').'-'.Str::uuid().'.json';
+        $saved = Storage::disk('local')->put($reportPath, json_encode([
+            'store_id' => $store->id,
+            'store_name' => $store->name,
+            'report' => $report,
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        if ($saved) {
+            $this->line('Report saved: '.Storage::disk('local')->path($reportPath));
+        } else {
+            $this->warn('Could not persist the discovery report.');
+        }
+    }
+
+    /**
      * Display a summary of all store executions.
      *
      * @param  array<int, array{success: bool, store: Store, report: array}>  $results
@@ -203,7 +351,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     protected function displaySummary(array $results): void
     {
         $this->newLine();
-        $this->info('=== Agentic Discovery Run Summary ===');
+        $this->info('=== Discovery Run Summary ===');
 
         foreach ($results as $result) {
             $store = $result['store'];

@@ -38,7 +38,11 @@ class RunAgentStrategyTest extends TestCase
 
         Http::assertSent(fn ($request) => $request['min_products'] === 12
             && $request['marketplace_strategy'] === 'default'
-            && $request['agent_options'] === []
+            // agent_options is cast to (object) before sending (so an empty
+            // marketplace profile still serializes as `{}`, not `[]`); the
+            // fake keeps that original value rather than round-tripping it
+            // through JSON, so compare it back as an array here.
+            && (array) $request['agent_options'] === []
             && ! isset($request['max_selected_candidates'])
             && ! isset($request['max_raw_candidates']));
         $reports = Storage::disk('local')->allFiles('hermes/reports');
@@ -61,7 +65,7 @@ class RunAgentStrategyTest extends TestCase
         $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
 
         Http::assertSent(fn ($request) => $request['marketplace_strategy'] === 'mercado_livre'
-            && $request['agent_options'] === [
+            && (array) $request['agent_options'] === [
                 'locale' => 'pt-BR',
                 'timezone' => 'America/Sao_Paulo',
                 'headless' => false,

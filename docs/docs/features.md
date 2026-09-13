@@ -115,12 +115,14 @@ everyone controls how they're notified.
 
 Support for light and dark mode. Fully mobile friendly and easy to use.
 
-## Agentic discovery with Hermes
+## Automatic product discovery
 
-Set a store's [access mode](./stores.md#access-mode) to **Agentic** and PriceBuddy's
-Hermes browser agent autonomously explores that store's listing pages, looking
-for new products that match your niche (tags) and minimum discount, and adds
-them to your catalog for you.
+Set a store's [collection mode](./stores.md#collection-mode) to **Agentic** and
+PriceBuddy's Hermes browser agent autonomously explores that store's listing
+pages, looking for new products that match your niche (tags) and minimum
+discount, and adds them to your catalog for you. Marketplaces whose **Api**
+integration supports discovery (like Shopee) can do the same directly through
+their API, without a browser agent.
 
 ## Open source and self-hostable
 

@@ -23,7 +23,7 @@ scrape content from that stores product page.
 You can add more than one domain to a store, for example, `amazon.com` and 
 `www.amazon.com`.
 
-## Access mode
+## Collection mode
 
 This controls how PriceBuddy gets product data for this store. Choose one:
 
@@ -31,26 +31,32 @@ This controls how PriceBuddy gets product data for this store. Choose one:
   using the [strategies](#strategies) below. This is the default and works for
   any store.
 * **Api** - PriceBuddy uses a configured API provider for this marketplace
-  instead of scraping. Only available where PriceBuddy has a real API
-  integration for that marketplace; otherwise saving/using this mode fails
-  with a clear error rather than silently falling back to scraping.
-* **Agentic** - An **Agentic discovery** section appears where you configure:
+  instead of scraping. An **Api credentials** card appears with whatever
+  fields that marketplace's provider needs (e.g. App ID/Secret for Shopee).
+  Only available where PriceBuddy has a real API integration for that
+  marketplace; otherwise saving/using this mode fails with a clear error
+  rather than silently falling back to scraping.
+* **Agentic** - PriceBuddy's Hermes browser agent explores configured pages
+  looking for new products.
 
-  | Field | Purpose |
-  | --- | --- |
-  | Niche (Tags) | Tags attached to any product the agent collects. |
-  | Visit URLs | Ordered list of pages the agent should start from. |
-  | Minimum new products | Stop after this many new products are created. Existing products do not count. |
-  | Minimum discount (%) | Apparent discount from visible current/original prices. |
+Choosing **Agentic** or **Api** (for a marketplace whose provider supports
+discovery, like Shopee) shows a **Discovery** card:
 
-  PriceBuddy's Hermes browser agent then explores those URLs looking for new
-  products matching that niche and discount, and adds them to your catalog.
-  See the [main README](https://github.com/jez500/pricebuddy#discovery-agent-hermes)
-  for how to run it from the CLI.
+| Field | Purpose |
+| --- | --- |
+| Niche (Tags) | Tags attached to any product found. |
+| Visit URLs | *(Agentic only)* Ordered list of pages Hermes should start from. |
+| Minimum new products | Stop after this many new products are created. Existing products do not count. |
+| Minimum discount (%) | Apparent discount from visible current/original prices. |
+
+Agentic browses the Visit URLs with Hermes; Api queries the marketplace's own
+API once per niche instead — no starting URLs needed. Either way, matching
+products get added to your catalog. See the [main README](https://github.com/jez500/pricebuddy#discovery-agent-hermes)
+for how to run discovery from the CLI.
 
 ### Proxy
 
-When **Access mode** is **Scraping**, a **Proxy** card appears. Most major
+When **Collection mode** is **Scraping**, a **Proxy** card appears. Most major
 marketplaces block unproxied scraping, so you may need to set this to
 **Prefer** or **Required** (leave unset to use the instance-wide default).
 Proxies themselves are configured instance-wide via the `SCRAPER_PROXIES`

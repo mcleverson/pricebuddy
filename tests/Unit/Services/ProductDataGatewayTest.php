@@ -114,19 +114,24 @@ class ProductDataGatewayTest extends TestCase
                 return $this->id;
             }
 
-            public function isConfigured(): bool
+            public function isConfigured(Store $store): bool
             {
                 return $this->configured;
             }
 
-            public function supports(ProductDataOperation $operation): bool
+            public function supports(Store $store, ProductDataOperation $operation): bool
             {
                 return in_array($operation, $this->operations, true);
             }
 
-            public function fetch(ProductDataOperation $operation, array $context): array|Collection
+            public function fetch(Store $store, ProductDataOperation $operation, array $context): array|Collection
             {
                 return ['origin' => 'api'];
+            }
+
+            public static function credentialFields(): array
+            {
+                return [];
             }
         };
     }

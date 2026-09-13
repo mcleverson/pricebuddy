@@ -43,4 +43,13 @@ return [
         'url' => env('HERMES_URL', 'http://hermes:8000'),
     ],
 
+    'pricebuddy' => [
+        // Same values Hermes uses to call back into this app (see docker-compose.yml);
+        // reused here so API-driven discovery (buddy:agent-strategy-run for
+        // access_mode=Api stores) ingests candidates through the exact same
+        // authenticated endpoint and ownership, without a separate HTTP hop.
+        'api_base_url' => env('PRICEBUDDY_API_BASE_URL', 'http://app/api'),
+        'api_token' => env('PRICEBUDDY_API_TOKEN'),
+    ],
+
 ];
