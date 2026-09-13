@@ -127,7 +127,10 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         $payload = [
             'marketplace' => $store->name,
             'marketplace_strategy' => $marketplaceStrategy->key(),
-            'agent_options' => $marketplaceStrategy->agentOptions($urls->first()),
+            // Cast to object so an empty array (no marketplace-specific options)
+            // still serializes as a JSON object `{}` rather than `[]` — Hermes
+            // requires agent_options to be an object.
+            'agent_options' => (object) $marketplaceStrategy->agentOptions($urls->first()),
             'goal' => $goal,
             'urls' => $urls->values()->all(),
             'tags' => $store->tags->pluck('name')->values()->all(),

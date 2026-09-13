@@ -134,6 +134,22 @@ Preview what would be executed without running it:
 docker compose exec app php artisan buddy:agent-strategy-run <store id or name> --dry-run
 ```
 
+`<store id or name>` matches the store's own `id` column or its `name` — not a
+separate, sequentially-numbered strategy id. Since a store's `id` depends on
+when it was created (and isn't necessarily small or sequential), prefer the
+store's **name** so the command doesn't need to change if ids shift, e.g.:
+
+```shell
+docker compose exec app php artisan buddy:agent-strategy-run "Amazon.com.br"
+```
+
+Running the command with no argument at all prompts you to pick from a list
+of agentic stores by name, so you never need to know an id:
+
+```shell
+docker compose exec app php artisan buddy:agent-strategy-run
+```
+
 The command calls the internal Hermes HTTP service (`HERMES_URL`). Set `PRICEBUDDY_API_TOKEN` in the project `.env` to a token with the discovery ability; the Compose services forward it to Hermes.
 
 Hermes reads candidates in page batches and checks `/api/discovery/candidates/check` against the token owner's entire catalog using PriceBuddy's existing URL normalization. Known URLs are skipped before opening product pages. New candidates are enriched in a separate tab and submitted immediately. Only API-confirmed creations count toward `min_products`.

@@ -90,7 +90,7 @@ class StoreResource extends Resource
                         ->placeholder('Auto-detect from domain')
                         ->hintIcon(Icons::Help->value, 'Optional explicit marketplace identity used to select an API provider'),
                     Select::make('access_mode')
-                        ->label('Access mode')
+                        ->label('Collection Mode')
                         ->options(AccessMode::class)
                         ->default(AccessMode::Scraping->value)
                         ->selectablePlaceholder(false)
@@ -112,16 +112,16 @@ class StoreResource extends Resource
 
                 Forms\Components\Group::make([
                     Section::make('Title strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('title', self::DEFAULT_SELECTORS['title']))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('title', self::DEFAULT_SELECTORS['title'], required: self::isScrapingMode()))->columns(2),
                     ])->description('How to get the product title'),
                     Section::make('Original price strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('original_price', required: false))->columns(2),
                     ])->description('How to get the original product price'),
                     Section::make('Price strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('price', self::DEFAULT_SELECTORS['price']))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('price', self::DEFAULT_SELECTORS['price'], required: self::isScrapingMode()))->columns(2),
                     ])->description('How to get the product price'),
                     Section::make('Image strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('image', self::DEFAULT_SELECTORS['image']))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('image', self::DEFAULT_SELECTORS['image'], required: self::isScrapingMode()))->columns(2),
                     ])->description('How to get the product image'),
                     Section::make('Availability strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('availability', required: false))->columns(2),
@@ -137,7 +137,7 @@ class StoreResource extends Resource
                                             ])
                                             ->default('match')
                                             ->afterStateHydrated(fn (Forms\Components\Select $component, ?string $state) => $component->state($state ?? 'match'))
-                                            ->required(),
+                                            ->required(self::isScrapingMode()),
                                         TextInput::make('availability.match.'.$status->value.'.value')
                                             ->label($status->getLabel())
                                             ->hintIcon($status->getIcon(), 'If the scraped text matches this value, the product will be marked as "'.$status->getLabel().'"'),
@@ -157,21 +157,26 @@ class StoreResource extends Resource
                             ->options(StockStatus::class)
                             ->default(StockStatus::InStock->value)
                             ->afterStateHydrated(fn (Forms\Components\Select $component, ?string $state) => $component->state($state ?? StockStatus::InStock->value))
-                            ->required()
+                            ->required(self::isScrapingMode())
                             ->hintIcon(Icons::Help->value, 'The status to use when the scraped text does not match any of the values above')
                             ->hidden(fn (Get $get): bool => $get('availability.type') === ScraperStrategyType::SchemaOrg->value),
                     ])->description('Optional: a selector that matches product availability.')
                         ->collapsed(fn (Get $get): bool => ($get('availability.value') ?? '') === ''),
                 ])
                     ->label('Scrape Strategy')
-                    ->statePath('scrape_strategy'),
+                    ->statePath('scrape_strategy')
+                    ->visible(self::isScrapingMode()),
 
-                self::getScraperSettings(),
+                self::getScraperSettings()
+                    ->visible(self::isScrapingMode()),
 
                 Section::make('Locale')
                     ->description(__('Override region and locale settings for this store'))
                     ->columns(2)
-                    ->schema(AppSettingsPage::getLocaleFormFields('settings.locale_settings')),
+                    ->schema(collect(AppSettingsPage::getLocaleFormFields('settings.locale_settings'))
+                        ->map(fn ($field) => $field->required(self::isScrapingMode()))
+                        ->all())
+                    ->visible(self::isScrapingMode()),
 
                 Section::make('Cookies')->schema([
                     TextInput::make('cookies')
@@ -185,6 +190,14 @@ class StoreResource extends Resource
                 ])->description('Additional notes regarding this store and how to scrape its content'),
             ])
             ->columns(1);
+    }
+
+    /**
+     * @return \Closure(Get): bool
+     */
+    protected static function isScrapingMode(): \Closure
+    {
+        return fn (Get $get): bool => $get('access_mode') === AccessMode::Scraping->value;
     }
 
     /**
@@ -381,13 +394,13 @@ class StoreResource extends Resource
                         ->formatStateUsing(fn (string $state) => $state.' products')
                         ->extraAttributes(['class' => 'min-w-36 md:flex md:justify-end pr-4'])
                         ->grow(false),
-                    TextColumn::make('settings.scraper_service')
-                        ->label('Scraper')
+                    TextColumn::make('access_mode')
+                        ->label('Collection Mode')
                         ->badge()
                         ->sortable()
                         ->extraAttributes(['class' => 'min-w-16'])
-                        ->formatStateUsing(fn (string $state) => strtoupper($state))
-                        ->color(fn (Store $record): array => ScraperService::tryFrom($record->scraper_service)->getColor())
+                        ->formatStateUsing(fn (AccessMode $state) => strtoupper($state->value))
+                        ->color(fn (AccessMode $state): array => $state->getColor())
                         ->grow(false),
                 ])->from('sm'),
 
@@ -395,9 +408,9 @@ class StoreResource extends Resource
             ->paginated(AdminPanelProvider::DEFAULT_PAGINATION)
             ->defaultSort('name')
             ->filters([
-                SelectFilter::make('settings->scraper_service')
-                    ->options(ScraperService::class)
-                    ->label('Scraper'),
+                SelectFilter::make('access_mode')
+                    ->options(AccessMode::class)
+                    ->label('Collection Mode'),
             ])
             ->actions([
                 EditAction::make(),

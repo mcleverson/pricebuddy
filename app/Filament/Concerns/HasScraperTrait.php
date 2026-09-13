@@ -106,7 +106,7 @@ trait HasScraperTrait
                     ->mapWithKeys(fn ($provider): array => [$provider->id => $provider->name])
                     ->all())
                 ->default(fn (): ?string => IntegrationHelper::getActiveAiProvider()?->id)
-                ->required(fn (Get $get): bool => (bool) $get('settings.ai_extraction_enabled'))
+                ->required(fn (Get $get): bool => $get('access_mode') === \App\Enums\AccessMode::Scraping->value && (bool) $get('settings.ai_extraction_enabled'))
                 ->visible(fn (Get $get): bool => (bool) $get('settings.ai_extraction_enabled'))
                 ->columnSpanFull(),
 
