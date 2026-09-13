@@ -31,6 +31,11 @@ class ProductCandidate:
     original_price: str | None = None
     image_url: str | None = None
     metadata_checked: bool = False
+    tag: str | None = None
+    """The single niche (from the strategy's configured tags) closest to this
+    product, as chosen by the LLM. None when only 0-1 tags are configured
+    (no ambiguity) or when the LLM couldn't confidently pick one — callers
+    should fall back to applying every configured tag in that case."""
 
 
 @dataclass
