@@ -66,6 +66,7 @@ class Store extends Model
         'agent_urls',
         'agent_max_products',
         'agent_min_discount_percentage',
+        'discovery_min_percentage_per_tag',
     ];
 
     protected function casts(): array
@@ -78,6 +79,7 @@ class Store extends Model
             'agent_urls' => 'array',
             'agent_max_products' => 'integer',
             'agent_min_discount_percentage' => 'decimal:2',
+            'discovery_min_percentage_per_tag' => 'integer',
         ];
     }
 

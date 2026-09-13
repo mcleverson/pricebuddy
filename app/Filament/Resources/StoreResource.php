@@ -325,6 +325,20 @@ class StoreResource extends Resource
                 ->required($isAgentic)
                 ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Agentic->value)
                 ->columnSpanFull(),
+
+            // Only meaningful for Api: each niche gets its own API query, so a
+            // floor across tags is deterministic (unlike Agentic, where niches
+            // share the same browsed pages).
+            TextInput::make('discovery_min_percentage_per_tag')
+                ->label('Minimum per niche (%)')
+                ->helperText('Guarantee at least this share of the target from each niche before filling the rest from any. 0 = no floor (first-come-first-served across niches).')
+                ->numeric()
+                ->minValue(0)
+                ->maxValue(100)
+                ->default(0)
+                ->suffix('%')
+                ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Api->value)
+                ->columnSpanFull(),
         ];
     }
 

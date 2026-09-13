@@ -157,12 +157,13 @@ class ShopeeProvider extends ConfiguredProvider
     protected function fetchDiscovery(Store $store, array $context): Collection
     {
         $tags = collect($context['tags'] ?? [])->filter()->values();
+        $minDiscountPercentage = (float) ($context['min_discount_percentage'] ?? 0);
         $client = $this->client($store);
         $limit = min(50, max(10, (int) ($context['target_candidates'] ?? 20)));
         $results = collect();
 
         foreach ($tags as $tag) {
-            $results = $results->merge($this->productsByKeyword($client, $store, $tag, $limit));
+            $results = $results->merge($this->productsByKeyword($client, $store, $tag, $limit, $minDiscountPercentage));
 
             foreach ($this->shopsByKeyword($client, $tag) as $shop) {
                 $shopId = data_get($shop, 'shopId');
@@ -172,7 +173,7 @@ class ShopeeProvider extends ConfiguredProvider
                 }
 
                 $results = $results->merge(
-                    $this->productsByShop($client, $store, (int) $shopId, $tag, self::DISCOVERY_PRODUCTS_PER_SHOP),
+                    $this->productsByShop($client, $store, (int) $shopId, $tag, self::DISCOVERY_PRODUCTS_PER_SHOP, $minDiscountPercentage),
                 );
             }
         }
@@ -183,7 +184,7 @@ class ShopeeProvider extends ConfiguredProvider
     /**
      * @return Collection<int, array<string, mixed>>
      */
-    protected function productsByKeyword(ShopeeAffiliateClient $client, Store $store, string $tag, int $limit): Collection
+    protected function productsByKeyword(ShopeeAffiliateClient $client, Store $store, string $tag, int $limit, float $minDiscountPercentage): Collection
     {
         $query = <<<GRAPHQL
             query DiscoverProducts(\$keyword: String, \$sortType: Int, \$listType: Int, \$limit: Int) {
@@ -200,13 +201,13 @@ class ShopeeProvider extends ConfiguredProvider
             'limit' => $limit,
         ]);
 
-        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag);
+        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag, $minDiscountPercentage);
     }
 
     /**
      * @return Collection<int, array<string, mixed>>
      */
-    protected function productsByShop(ShopeeAffiliateClient $client, Store $store, int $shopId, string $tag, int $limit): Collection
+    protected function productsByShop(ShopeeAffiliateClient $client, Store $store, int $shopId, string $tag, int $limit, float $minDiscountPercentage): Collection
     {
         $query = <<<GRAPHQL
             query ProductsByShop(\$shopId: Int, \$sortType: Int, \$limit: Int) {
@@ -222,7 +223,7 @@ class ShopeeProvider extends ConfiguredProvider
             'limit' => $limit,
         ]);
 
-        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag);
+        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag, $minDiscountPercentage);
     }
 
     /**
@@ -251,10 +252,11 @@ class ShopeeProvider extends ConfiguredProvider
      * @param  array<int, array<string, mixed>>  $nodes
      * @return Collection<int, array<string, mixed>>
      */
-    protected function mapProductNodes(array $nodes, Store $store, string $tag): Collection
+    protected function mapProductNodes(array $nodes, Store $store, string $tag, float $minDiscountPercentage): Collection
     {
         return collect($nodes)
             ->filter(fn (array $node): bool => filled(data_get($node, 'offerLink')) && filled(data_get($node, 'priceMin')))
+            ->filter(fn (array $node): bool => $this->meetsMinimumDiscount($node, $minDiscountPercentage))
             ->map(fn (array $node): array => [
                 'url' => data_get($node, 'offerLink'),
                 'title' => data_get($node, 'productName'),
@@ -308,6 +310,25 @@ class ShopeeProvider extends ConfiguredProvider
         }
 
         return [null, null];
+    }
+
+    /**
+     * Mirrors Hermes's _candidate_meets_minimum_discount: Shopee's API has no
+     * "minimum discount" query parameter, so the Store's configured floor is
+     * enforced client-side against priceDiscountRate. When no minimum is
+     * configured (0), every node passes regardless of discount data.
+     *
+     * @param  array<string, mixed>  $node
+     */
+    protected function meetsMinimumDiscount(array $node, float $minDiscountPercentage): bool
+    {
+        if ($minDiscountPercentage <= 0) {
+            return true;
+        }
+
+        $discountRate = data_get($node, 'priceDiscountRate');
+
+        return is_numeric($discountRate) && (float) $discountRate >= $minDiscountPercentage;
     }
 
     /**

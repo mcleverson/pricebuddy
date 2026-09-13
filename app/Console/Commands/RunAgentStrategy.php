@@ -262,16 +262,12 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             return ['success' => false, 'store' => $store, 'report' => []];
         }
 
-        $created = 0;
-        foreach ($candidates as $candidate) {
-            if ($created >= $target) {
-                break;
-            }
-
-            if ($this->ingestCandidate($candidate)) {
-                $created++;
-            }
-        }
+        $created = $this->ingestWithNicheFloor(
+            collect($candidates),
+            $tags,
+            $target,
+            (int) $store->discovery_min_percentage_per_tag,
+        );
 
         $report = [
             'status' => $created >= $target ? 'completed' : 'incomplete',
@@ -290,6 +286,68 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         $this->info("Store [{$store->name}] completed (created: {$created}/{$target}).");
 
         return ['success' => true, 'store' => $store, 'report' => $report];
+    }
+
+    /**
+     * Ingest up to $target candidates, guaranteeing at least
+     * ceil($target * $minPercentagePerTag / 100) from each configured niche
+     * before filling the remaining slots from any niche (in the order the
+     * provider returned them). A niche that simply has fewer matching
+     * candidates than its floor just contributes what it has — the shortfall
+     * shows up as the run finishing 'incomplete', same as today.
+     *
+     * @param  Collection<int, array<string, mixed>>  $candidates
+     * @param  Collection<int, string>  $tags
+     */
+    protected function ingestWithNicheFloor(Collection $candidates, Collection $tags, int $target, int $minPercentagePerTag): int
+    {
+        $byTag = $candidates->groupBy(fn (array $candidate) => data_get($candidate, 'tags.0'));
+        $floorPerTag = $minPercentagePerTag > 0 ? (int) ceil($target * $minPercentagePerTag / 100) : 0;
+        $created = 0;
+        $attempted = [];
+
+        $ingest = function (array $candidate) use (&$created, &$attempted): void {
+            $key = (string) ($candidate['url'] ?? '');
+
+            if ($key === '' || isset($attempted[$key])) {
+                return;
+            }
+
+            $attempted[$key] = true;
+
+            if ($this->ingestCandidate($candidate)) {
+                $created++;
+            }
+        };
+
+        if ($floorPerTag > 0) {
+            foreach ($tags as $tag) {
+                $createdForTag = 0;
+
+                foreach ($byTag->get($tag, collect()) as $candidate) {
+                    if ($createdForTag >= $floorPerTag || $created >= $target) {
+                        break;
+                    }
+
+                    $before = $created;
+                    $ingest($candidate);
+
+                    if ($created > $before) {
+                        $createdForTag++;
+                    }
+                }
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            if ($created >= $target) {
+                break;
+            }
+
+            $ingest($candidate);
+        }
+
+        return $created;
     }
 
     /**
