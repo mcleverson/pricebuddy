@@ -24,6 +24,10 @@ class DiscoveryCandidateRequest extends FormRequest
             'price' => ['required', 'numeric', 'gt:0'],
             'original_price' => ['sometimes', 'nullable', 'numeric', 'gt:0'],
             'image' => ['sometimes', 'nullable', 'url:http,https', 'max:1024'],
+            // A ready-to-use affiliate link, when the discovery source already has
+            // one (e.g. Shopee's API returns it alongside the product itself) —
+            // saves waiting for the next price-refresh cycle to populate it.
+            'affiliate_url' => ['sometimes', 'nullable', 'url:http,https', 'max:2048'],
             'store_id' => ['required', 'integer', 'exists:stores,id'],
             'product_id' => [
                 'sometimes',

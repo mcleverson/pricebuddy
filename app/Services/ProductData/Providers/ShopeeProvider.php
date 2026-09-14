@@ -258,10 +258,18 @@ class ShopeeProvider extends ConfiguredProvider
     protected function mapProductNodes(array $nodes, Store $store, string $tag, float $minDiscountPercentage): Collection
     {
         return collect($nodes)
-            ->filter(fn (array $node): bool => filled(data_get($node, 'offerLink')) && filled(data_get($node, 'priceMin')))
+            ->filter(fn (array $node): bool => filled(data_get($node, 'productLink'))
+                && filled(data_get($node, 'offerLink'))
+                && filled(data_get($node, 'priceMin')))
             ->filter(fn (array $node): bool => $this->meetsMinimumDiscount($node, $minDiscountPercentage))
             ->map(fn (array $node): array => [
-                'url' => data_get($node, 'offerLink'),
+                // The canonical product page — not the affiliate short link — is
+                // what gets tracked as the product's url: it's the one
+                // parseProductUrl() can re-resolve (shopId/itemId) on future price
+                // refreshes. The short link is only good for one-time redirects,
+                // it doesn't encode either id.
+                'url' => data_get($node, 'productLink'),
+                'affiliate_url' => data_get($node, 'offerLink'),
                 'title' => data_get($node, 'productName'),
                 'price' => data_get($node, 'priceMin'),
                 'original_price' => $this->originalPrice($node),
