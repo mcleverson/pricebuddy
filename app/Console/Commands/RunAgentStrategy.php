@@ -306,34 +306,50 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         $created = 0;
         $attempted = [];
 
-        $ingest = function (array $candidate) use (&$created, &$attempted): void {
+        $ingest = function (array $candidate) use (&$created, &$attempted): bool {
             $key = (string) ($candidate['url'] ?? '');
 
             if ($key === '' || isset($attempted[$key])) {
-                return;
+                return false;
             }
 
             $attempted[$key] = true;
 
             if ($this->ingestCandidate($candidate)) {
                 $created++;
+
+                return true;
             }
+
+            return false;
         };
 
         if ($floorPerTag > 0) {
-            foreach ($tags as $tag) {
-                $createdForTag = 0;
+            // Round-robin one candidate per tag per round (rather than filling one
+            // tag's floor completely before moving to the next) — otherwise, when
+            // floors summed across tags exceed the target (e.g. 5 tags x 30% of a
+            // small target), the first tags would consume the whole target and the
+            // last ones would get nothing, defeating the point of a floor.
+            $queues = $tags->mapWithKeys(fn (string $tag) => [$tag => $byTag->get($tag, collect())->values()])->all();
+            $createdPerTag = array_fill_keys($tags->all(), 0);
 
-                foreach ($byTag->get($tag, collect()) as $candidate) {
-                    if ($createdForTag >= $floorPerTag || $created >= $target) {
-                        break;
+            $madeProgress = true;
+            while ($madeProgress && $created < $target) {
+                $madeProgress = false;
+
+                foreach ($tags as $tag) {
+                    if ($created >= $target || $createdPerTag[$tag] >= $floorPerTag) {
+                        continue;
                     }
 
-                    $before = $created;
-                    $ingest($candidate);
+                    while ($queues[$tag]->isNotEmpty()) {
+                        $candidate = $queues[$tag]->shift();
 
-                    if ($created > $before) {
-                        $createdForTag++;
+                        if ($ingest($candidate)) {
+                            $createdPerTag[$tag]++;
+                            $madeProgress = true;
+                            break;
+                        }
                     }
                 }
             }
