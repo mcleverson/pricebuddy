@@ -1,8 +1,6 @@
 @php
     /** @var App\Models\Product $record */
-    use App\Services\SearchService;
-    $searchEnabled = SearchService::canSearch();
-    $activeTab = ($searchEnabled && request()->get('searchQuery')) ? 'search' : 'overview';
+    $activeTab = 'overview';
     //dd($record->getPriceCache());
 @endphp
 <x-filament-panels::page class="fi-dashboard-page product-view" xmlns:x-filament="http://www.w3.org/1999/html">
@@ -25,16 +23,6 @@
                     {{ __('Insights') }}
                 </div>
             </x-filament::tabs.item>
-
-            @if ($searchEnabled)
-                <x-filament::tabs.item @click="tab = 'search'" :alpine-active="'tab === \'search\''"
-                                       class="w-full sm:w-auto">
-                    <div class="flex align-center gap-2">
-                        <x-filament::icon icon="heroicon-m-magnifying-glass" class="w-4"/>
-                        {{ __('Search') }}
-                    </div>
-                </x-filament::tabs.item>
-            @endif
         </x-filament::tabs>
 
         {{-- Tab content --}}
@@ -87,12 +75,6 @@
             <div x-show="tab === 'insights'">
                 @include('filament.pages.product.insights.index', ['record' => $record])
             </div>
-
-            @if ($searchEnabled)
-                <div x-show="tab === 'search'">
-                    @livewire(\App\Filament\Resources\ProductResource\Widgets\CreateViaSearchForm::class, ['product' => $record, 'lazy' => true])
-                </div>
-            @endif
 
         </div>
     </div>

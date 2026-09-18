@@ -2,11 +2,18 @@
 
 namespace App\Console\Commands;
 
-use App\Models\AgentStrategy;
+use App\Enums\AccessMode;
+use App\Enums\ProductDataOperation;
+use App\Models\Store;
+use App\Services\ProductData\ApiProviderRegistry;
+use App\Services\ProductData\MarketplaceRegistry;
+use App\Services\Scraping\MarketplaceStrategyResolver;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\PromptsForMissingInput;
-use Illuminate\Process\Exceptions\ProcessFailedException;
-use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 
 use function Laravel\Prompts\select;
@@ -18,172 +25,431 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     /**
      * The name and signature of the console command.
      */
-    protected $signature = self::COMMAND.' {strategy? : The ID or name of the strategy}'.
-        ' {--all : Run all strategies in sequence}'.
+    protected $signature = self::COMMAND.' {store? : The ID or name of the store}'.
+        ' {--all : Run all discovery-eligible stores, in sequence}'.
         ' {--dry-run : Show the command instead of executing it}';
 
     /**
      * The console command description.
      */
-    protected $description = 'Run Hermes agent using a registered agent strategy';
+    protected $description = 'Run product discovery for a store configured with access_mode=agentic (via Hermes) or access_mode=api (via its provider, when supported)';
 
     /**
      * Execute the console command.
      */
-    public function handle(): int
-    {
-        $strategies = $this->resolveStrategies();
+    public function handle(
+        MarketplaceStrategyResolver $marketplaceStrategies,
+        MarketplaceRegistry $marketplaces,
+        ApiProviderRegistry $providers,
+    ): int {
+        $stores = $this->resolveStores($marketplaces, $providers);
 
-        if ($strategies->isEmpty()) {
-            $this->warn('No agent strategy found.');
+        if ($stores->isEmpty()) {
+            $this->warn('No discovery-eligible store found.');
 
             return SymfonyCommand::FAILURE;
         }
 
-        foreach ($strategies as $strategy) {
-            if (! $this->runStrategy($strategy)) {
-                return SymfonyCommand::FAILURE;
-            }
+        $results = [];
+        foreach ($stores as $store) {
+            $results[] = $store->access_mode === AccessMode::Api
+                ? $this->runApiDiscovery($store, $marketplaces, $providers)
+                : $this->runAgenticDiscovery($store, $marketplaceStrategies);
         }
 
-        return SymfonyCommand::SUCCESS;
+        $this->displaySummary($results);
+
+        $hasFailure = collect($results)->contains(fn (array $result) => ! $result['success']);
+
+        return $hasFailure ? SymfonyCommand::FAILURE : SymfonyCommand::SUCCESS;
     }
 
     /**
-     * @return \Illuminate\Support\Collection<int, AgentStrategy>
+     * @return Collection<int, Store>
      */
-    protected function resolveStrategies(): \Illuminate\Support\Collection
+    protected function resolveStores(MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): Collection
     {
+        $eligible = fn () => Store::query()
+            ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
+            ->with('tags')
+            ->get()
+            ->filter(fn (Store $store): bool => $this->isDiscoveryEligible($store, $marketplaces, $providers))
+            ->values();
+
         if ($this->option('all')) {
-            return AgentStrategy::with(['store', 'tags'])->get();
+            return $eligible();
         }
 
-        $identifier = $this->argument('strategy');
-
+        $identifier = $this->argument('store');
 
         if ($identifier === null) {
-            $strategies = AgentStrategy::with(['store', 'tags'])->get();
+            $stores = $eligible();
 
-            if ($strategies->isEmpty()) {
-                return $strategies;
+            if ($stores->isEmpty()) {
+                return $stores;
             }
 
             $selectedId = select(
-                label: 'Which strategy would you like to run?',
-                options: $strategies->mapWithKeys(fn (AgentStrategy $strategy) => [
-                    $strategy->id => $strategy->name,
+                label: 'Which store would you like to run?',
+                options: $stores->mapWithKeys(fn (Store $store) => [
+                    $store->id => $store->name,
                 ])->all(),
             );
 
-            return $strategies->where('id', $selectedId);
+            return $stores->where('id', $selectedId)->values();
         }
 
-        $strategy = AgentStrategy::with(['store', 'tags'])
-            ->where('id', $identifier)
-            ->orWhere('name', $identifier)
+        $store = Store::query()
+            ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
+            ->with('tags')
+            ->where(fn ($query) => $query->where('id', $identifier)->orWhere('name', $identifier))
             ->first();
 
-        if ($strategy === null) {
+        if ($store === null || ! $this->isDiscoveryEligible($store, $marketplaces, $providers)) {
             return collect();
         }
 
-        return collect([$strategy]);
+        return collect([$store]);
     }
 
-    protected function runStrategy(AgentStrategy $strategy): bool
+    /**
+     * Agentic stores always run via Hermes. Api stores only run when their
+     * configured provider actually supports Discovery (e.g. Shopee) — otherwise
+     * this command has nothing to do for them (price refresh is a separate,
+     * unrelated flow).
+     */
+    protected function isDiscoveryEligible(Store $store, MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): bool
     {
-        $this->info("Running strategy: {$strategy->name}");
+        if ($store->access_mode === AccessMode::Agentic) {
+            return true;
+        }
 
-        $urls = collect($strategy->urls)
+        if ($store->access_mode !== AccessMode::Api) {
+            return false;
+        }
+
+        $provider = $providers->resolve($marketplaces->resolve($store->marketplace_id));
+
+        return $provider !== null
+            && $provider->isConfigured($store)
+            && $provider->supports($store, ProductDataOperation::Discovery);
+    }
+
+    protected function runAgenticDiscovery(
+        Store $store,
+        MarketplaceStrategyResolver $marketplaceStrategies,
+    ): array
+    {
+        $this->info("Running agentic discovery for store: {$store->name}");
+
+        $urls = collect($store->agent_urls)
             ->pluck('url')
             ->filter()
             ->values();
 
         if ($urls->isEmpty()) {
-            $this->warn("Strategy [{$strategy->name}] has no URLs to visit.");
+            $this->warn("Store [{$store->name}] has no agent URLs to visit.");
 
-            return false;
+            return ['success' => false, 'store' => $store, 'report' => []];
         }
 
-        $allowedHosts = $strategy->allowedHosts();
-        $tagNames = $strategy->tags->pluck('name')->implode(',');
-        $goal = "Encontre ofertas de {$tagNames} em {$strategy->store->name}";
+        $allowedHosts = $store->allowedHosts();
+        $tagNames = $store->tags->pluck('name')->implode(',');
+        $goal = "Encontre ofertas de {$tagNames} em {$store->name}";
+        $marketplaceStrategy = $marketplaceStrategies->resolve($urls->first());
 
-        $envs = [
-            'HERMES_STORE_ID' => (string) $strategy->store_id,
-            'HERMES_MIN_DISCOUNT_PERCENTAGE' => (string) $strategy->min_discount_percentage,
-            'HERMES_MAX_RAW_CANDIDATES' => (string) $strategy->max_products,
-            'HERMES_MAX_SELECTED_CANDIDATES' => (string) $strategy->max_products,
-            'HERMES_DEFAULT_TAG' => $tagNames,
-            'HERMES_ALLOWED_HOSTS' => implode(',', $allowedHosts),
+        $payload = [
+            'marketplace' => $store->name,
+            'marketplace_strategy' => $marketplaceStrategy->key(),
+            // Cast to object so an empty array (no marketplace-specific options)
+            // still serializes as a JSON object `{}` rather than `[]` — Hermes
+            // requires agent_options to be an object.
+            'agent_options' => (object) $marketplaceStrategy->agentOptions($urls->first()),
+            'goal' => $goal,
+            'urls' => $urls->values()->all(),
+            'tags' => $store->tags->pluck('name')->values()->all(),
+            'allowed_hosts' => $allowedHosts,
+            'store_id' => $store->id,
+            'min_products' => $store->agent_max_products,
+            'min_discount_percentage' => $store->agent_min_discount_percentage,
+            'min_rating' => (float) $store->discovery_min_rating,
+            'min_sales' => (int) $store->discovery_min_sales,
         ];
 
-        $command = $this->buildDockerCommand($strategy, $goal, $urls);
-
         if ($this->option('dry-run')) {
-            $this->info("Environment:");
-            foreach ($envs as $key => $value) {
-                $this->line("  {$key}={$value}");
-            }
-            $this->info("Command: {$command}");
+            $this->info('Hermes payload:');
+            $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-            return true;
+            return ['success' => true, 'store' => $store, 'report' => ['status' => 'dry-run']];
         }
 
         try {
-            $result = Process::env($envs)->timeout(1200)->run($command, function (string $type, string $line) {
-                $this->output->write($line);
-            });
+            $response = Http::timeout(config('services.hermes.timeout'))
+                ->post(config('services.hermes.url', 'http://hermes:8000').'/discover', $payload);
 
-            if (! $result->successful()) {
-                $this->error("Strategy [{$strategy->name}] failed with exit code {$result->exitCode()}");
+            if (! $response->successful()) {
+                $this->error("Store [{$store->name}] failed with HTTP status {$response->status()}");
+                $this->error($response->body());
 
-                return false;
+                return ['success' => false, 'store' => $store, 'report' => []];
             }
 
-            $this->info("Strategy [{$strategy->name}] completed.");
+            $report = $response->json();
+            $this->saveReport($store, $report);
 
-            return true;
-        } catch (ProcessFailedException $exception) {
-            $this->error("Strategy [{$strategy->name}] failed: {$exception->getMessage()}");
+            if (($report['status'] ?? null) === 'incomplete') {
+                $this->warn('Minimum new products not reached: '.($report['abort_reason'] ?? 'sources exhausted'));
+                $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-            return false;
+                return ['success' => false, 'store' => $store, 'report' => $report];
+            }
+
+            if (isset($report['status']) && $report['status'] === 'error') {
+                $this->error("Store [{$store->name}] failed: ".($report['error'] ?? 'unknown error'));
+
+                return ['success' => false, 'store' => $store, 'report' => $report];
+            }
+
+            $this->info("Store [{$store->name}] completed.");
+            $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+            return ['success' => true, 'store' => $store, 'report' => $report];
+        } catch (\Exception $exception) {
+            $this->error("Store [{$store->name}] failed: {$exception->getMessage()}");
+
+            return ['success' => false, 'store' => $store, 'report' => []];
         }
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, string>  $urls
+     * Discovery via the store's own API provider (e.g. Shopee), run in-process —
+     * no Hermes involved. Candidates are posted to this same app's own
+     * /discovery/candidates endpoint using PRICEBUDDY_API_TOKEN, exactly like
+     * Hermes does, so ownership/tag-scoping is identical between both paths.
      */
-    protected function buildDockerCommand(AgentStrategy $strategy, string $goal, \Illuminate\Support\Collection $urls): string
+    protected function runApiDiscovery(
+        Store $store,
+        MarketplaceRegistry $marketplaces,
+        ApiProviderRegistry $providers,
+    ): array
     {
-        $parts = [
-            'docker',
-            'compose',
-            '--profile',
-            'agent',
-            'run',
-            '--rm',
-            'hermes_agent',
-            'python',
-            'src/agent.py',
-            '--marketplace',
-            escapeshellarg($strategy->store->name),
-            '--goal',
-            escapeshellarg($goal),
-        ];
+        $this->info("Running API discovery for store: {$store->name}");
 
-        foreach ($urls as $url) {
-            $parts[] = '--urls';
-            $parts[] = escapeshellarg($url);
+        $tags = $store->tags->pluck('name')->values();
+
+        if ($tags->isEmpty()) {
+            $this->warn("Store [{$store->name}] has no niche (tags) configured.");
+
+            return ['success' => false, 'store' => $store, 'report' => []];
         }
 
-        $parts[] = '--max-raw-candidates';
-        $parts[] = (string) $strategy->max_products;
-        $parts[] = '--max-selected-candidates';
-        $parts[] = (string) $strategy->max_products;
-        $parts[] = '--min-discount-percentage';
-        $parts[] = (string) $strategy->min_discount_percentage;
+        $target = (int) $store->agent_max_products;
+        $provider = $providers->resolve($marketplaces->resolve($store->marketplace_id));
 
-        return implode(' ', $parts);
+        if ($this->option('dry-run')) {
+            $this->info('Would query the API for niches: '.$tags->implode(', '));
+
+            return ['success' => true, 'store' => $store, 'report' => ['status' => 'dry-run']];
+        }
+
+        try {
+            $candidates = $provider->fetch($store, ProductDataOperation::Discovery, [
+                'tags' => $tags->all(),
+                'min_discount_percentage' => (float) $store->agent_min_discount_percentage,
+                'min_sales' => (float) $store->discovery_min_sales,
+                'min_rating' => (float) $store->discovery_min_rating,
+                'target_candidates' => $target,
+            ]);
+        } catch (\Throwable $exception) {
+            $this->error("Store [{$store->name}] failed: {$exception->getMessage()}");
+
+            return ['success' => false, 'store' => $store, 'report' => []];
+        }
+
+        $created = $this->ingestWithNicheFloor(
+            collect($candidates),
+            $tags,
+            $target,
+            (int) $store->discovery_min_percentage_per_tag,
+        );
+
+        $report = [
+            'status' => $created >= $target ? 'completed' : 'incomplete',
+            'total_candidates' => $created,
+            'min_products' => $target,
+        ];
+
+        $this->saveReport($store, $report);
+
+        if ($created < $target) {
+            $this->warn("Minimum new products not reached for [{$store->name}]: {$created}/{$target}.");
+
+            return ['success' => false, 'store' => $store, 'report' => $report];
+        }
+
+        $this->info("Store [{$store->name}] completed (created: {$created}/{$target}).");
+
+        return ['success' => true, 'store' => $store, 'report' => $report];
+    }
+
+    /**
+     * Ingest up to $target candidates, guaranteeing at least
+     * ceil($target * $minPercentagePerTag / 100) from each configured niche
+     * before filling the remaining slots from any niche (in the order the
+     * provider returned them). A niche that simply has fewer matching
+     * candidates than its floor just contributes what it has — the shortfall
+     * shows up as the run finishing 'incomplete', same as today.
+     *
+     * @param  Collection<int, array<string, mixed>>  $candidates
+     * @param  Collection<int, string>  $tags
+     */
+    protected function ingestWithNicheFloor(Collection $candidates, Collection $tags, int $target, int $minPercentagePerTag): int
+    {
+        $byTag = $candidates->groupBy(fn (array $candidate) => data_get($candidate, 'tags.0'));
+        $floorPerTag = $minPercentagePerTag > 0 ? (int) ceil($target * $minPercentagePerTag / 100) : 0;
+        $created = 0;
+        $attempted = [];
+
+        $ingest = function (array $candidate) use (&$created, &$attempted): bool {
+            $key = (string) ($candidate['url'] ?? '');
+
+            if ($key === '' || isset($attempted[$key])) {
+                return false;
+            }
+
+            $attempted[$key] = true;
+
+            if ($this->ingestCandidate($candidate)) {
+                $created++;
+
+                return true;
+            }
+
+            return false;
+        };
+
+        if ($floorPerTag > 0) {
+            // Round-robin one candidate per tag per round (rather than filling one
+            // tag's floor completely before moving to the next) — otherwise, when
+            // floors summed across tags exceed the target (e.g. 5 tags x 30% of a
+            // small target), the first tags would consume the whole target and the
+            // last ones would get nothing, defeating the point of a floor.
+            $queues = $tags->mapWithKeys(fn (string $tag) => [$tag => $byTag->get($tag, collect())->values()])->all();
+            $createdPerTag = array_fill_keys($tags->all(), 0);
+
+            $madeProgress = true;
+            while ($madeProgress && $created < $target) {
+                $madeProgress = false;
+
+                foreach ($tags as $tag) {
+                    if ($created >= $target || $createdPerTag[$tag] >= $floorPerTag) {
+                        continue;
+                    }
+
+                    while ($queues[$tag]->isNotEmpty()) {
+                        $candidate = $queues[$tag]->shift();
+
+                        if ($ingest($candidate)) {
+                            $createdPerTag[$tag]++;
+                            $madeProgress = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            if ($created >= $target) {
+                break;
+            }
+
+            $ingest($candidate);
+        }
+
+        return $created;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    protected function ingestCandidate(array $candidate): bool
+    {
+        $token = config('services.pricebuddy.api_token');
+
+        if (blank($token)) {
+            $this->warn('PRICEBUDDY_API_TOKEN is not configured; cannot ingest API-discovered candidates.');
+
+            return false;
+        }
+
+        $baseUrl = rtrim((string) config('services.pricebuddy.api_base_url', 'http://app/api'), '/');
+
+        try {
+            $response = Http::withToken($token)->post($baseUrl.'/discovery/candidates', $candidate);
+        } catch (\Exception $exception) {
+            $this->warn("Failed to ingest candidate {$candidate['url']}: {$exception->getMessage()}");
+
+            return false;
+        }
+
+        if (! $response->successful()) {
+            $this->warn("Candidate {$candidate['url']} rejected with HTTP status {$response->status()}");
+
+            return false;
+        }
+
+        return (bool) $response->json('created', false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $report
+     */
+    protected function saveReport(Store $store, array $report): void
+    {
+        $reportPath = 'hermes/reports/'.now()->format('Ymd-His').'-'.Str::uuid().'.json';
+        $saved = Storage::disk('local')->put($reportPath, json_encode([
+            'store_id' => $store->id,
+            'store_name' => $store->name,
+            'report' => $report,
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        if ($saved) {
+            $this->line('Report saved: '.Storage::disk('local')->path($reportPath));
+        } else {
+            $this->warn('Could not persist the discovery report.');
+        }
+    }
+
+    /**
+     * Display a summary of all store executions.
+     *
+     * @param  array<int, array{success: bool, store: Store, report: array}>  $results
+     */
+    protected function displaySummary(array $results): void
+    {
+        $this->newLine();
+        $this->info('=== Discovery Run Summary ===');
+
+        foreach ($results as $result) {
+            $store = $result['store'];
+            $report = $result['report'];
+            $status = $result['success'] ? 'completed' : ($report['status'] ?? 'error');
+            $created = $report['total_candidates'] ?? 0;
+            $target = $report['min_products'] ?? $store->agent_max_products;
+            $abortReason = $report['abort_reason'] ?? null;
+
+            $this->line(sprintf(
+                '%s: %s (created: %d/%d)%s',
+                $store->name,
+                $status,
+                $created,
+                $target,
+                $abortReason ? " — {$abortReason}" : ''
+            ));
+        }
+
+        $failed = count(array_filter($results, fn ($r) => ! $r['success']));
+        $this->line(sprintf('Total: %d stores, %d failed.', count($results), $failed));
     }
 }

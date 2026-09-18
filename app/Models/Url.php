@@ -70,6 +70,7 @@ class Url extends Model
             'updated_at' => 'datetime',
             'created_at' => 'datetime',
             'availability' => StockStatus::class,
+            'affiliate_url_synced_at' => 'datetime',
         ];
     }
 
@@ -118,7 +119,9 @@ class Url extends Model
     protected function buyUrl(): Attribute
     {
         return Attribute::make(
-            get: fn () => AffiliateHelper::new()->parseUrl($this->url)
+            get: fn () => filled($this->affiliate_url)
+                ? $this->affiliate_url
+                : AffiliateHelper::new()->parseUrl($this->url)
         );
     }
 
@@ -163,10 +166,18 @@ class Url extends Model
      * product page.
      *
      * Rule: lowercase host without a leading "www.", plus the lowercased path with
-     * trailing slashes removed, plus the surviving query parameters sorted and
-     * joined. Scheme, port, userinfo and fragment are discarded. Returns an empty
-     * string for anything unparseable — callers must coerce that to NULL before
-     * persisting, or every malformed row would share one key.
+     * trailing slashes removed and tracking path segments stripped, plus the
+     * surviving query parameters sorted and joined. Scheme, port, userinfo and
+     * fragment are discarded. Returns an empty string for anything unparseable —
+     * callers must coerce that to NULL before persisting, or every malformed row
+     * would share one key.
+     *
+     * Amazon (and similar sites) encode search-position/sponsorship tracking as an
+     * extra path segment rather than a query parameter, e.g.
+     * "/dp/B0D8J5NJ9M/ref=sr_1_5" and "/dp/B0D8J5NJ9M/ref=sxin_16_pa_sp..." both
+     * point at the same product page. Those segments are stripped before the path
+     * is folded in, otherwise the same product gets a different key per search
+     * result slot and dedup silently misses.
      *
      * The tracking-parameter denylist lives in config/url_matching.php. It is
      * internal only: it is never exposed in an API response and has no client-side
@@ -197,12 +208,21 @@ class Url extends Model
             return '';
         }
 
-        $path = $uri->path();
+        $path = static::stripTrackingPathSegments($uri->path());
         $path = $path === '/' ? '' : '/'.Str::lower($path);
 
         $query = static::filterTrackingParams((string) $uri->query()->value());
 
         return Str::substr($host.$path.($query === '' ? '' : '?'.$query), 0, 255);
+    }
+
+    /**
+     * Drop path segments that carry per-impression tracking instead of identifying
+     * the resource, e.g. Amazon's "/ref=sr_1_5" or "/ref=sxin_16_pa_sp_...".
+     */
+    protected static function stripTrackingPathSegments(string $path): string
+    {
+        return (string) preg_replace('#/ref=[^/?]*#i', '', $path);
     }
 
     /**
@@ -309,11 +329,38 @@ class Url extends Model
             return [];
         }
 
-        return resolve(ProductDataGateway::class)->productDetails(
+        $result = resolve(ProductDataGateway::class)->productDetails(
             $this->store,
             $this->url,
             fn (): array => ScrapeUrl::new($this->url)->scrape(),
         );
+
+        $this->refreshAffiliateUrl();
+
+        return $result;
+    }
+
+    /**
+     * Refresh the cached API-generated affiliate link (e.g. Shopee), at most
+     * once a day, so buy_url doesn't need a live network call on every view.
+     * A no-op for stores whose access mode/provider doesn't produce one.
+     */
+    protected function refreshAffiliateUrl(): void
+    {
+        if ($this->affiliate_url_synced_at?->gt(now()->subDay())) {
+            return;
+        }
+
+        try {
+            $link = resolve(ProductDataGateway::class)->affiliateLink($this->store, $this->url);
+        } catch (\Throwable) {
+            return;
+        }
+
+        $this->forceFill([
+            'affiliate_url' => $link,
+            'affiliate_url_synced_at' => now(),
+        ])->saveQuietly();
     }
 
     public function getAvailabilityStatus(): ?StockStatus

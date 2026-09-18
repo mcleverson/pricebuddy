@@ -19,11 +19,6 @@ class IntegrationHelper
         SettingsHelper::setSetting('integrated_services', $settings);
     }
 
-    public static function getSearchSettings(): array
-    {
-        return data_get(self::getSettings(), IntegratedServices::SearXng->value, []);
-    }
-
     public static function getMarketplaceSettings(string $marketplaceId): array
     {
         return data_get(
@@ -36,14 +31,6 @@ class IntegrationHelper
     public static function getAiSettings(): array
     {
         return data_get(self::getSettings(), IntegratedServices::Ai->value, []);
-    }
-
-    public static function isSearchEnabled(): bool
-    {
-        $searchSettings = self::getSearchSettings();
-
-        return data_get($searchSettings, 'enabled', false)
-            && data_get($searchSettings, 'url', null);
     }
 
     public static function isAiEnabled(): bool

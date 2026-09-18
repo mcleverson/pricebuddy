@@ -2,9 +2,11 @@
 
 namespace App\Filament\Resources;
 
+use App\Contracts\ProductDataProvider;
 use App\Enums\AccessMode;
 use App\Enums\AiFeature;
 use App\Enums\Icons;
+use App\Enums\ProxyMode;
 use App\Enums\ScraperService;
 use App\Enums\ScraperStrategyType;
 use App\Enums\StockStatus;
@@ -87,27 +89,48 @@ class StoreResource extends Resource
                         ->label('Marketplace')
                         ->options(fn (): array => app(MarketplaceRegistry::class)->options())
                         ->placeholder('Auto-detect from domain')
+                        ->live()
                         ->hintIcon(Icons::Help->value, 'Optional explicit marketplace identity used to select an API provider'),
                     Select::make('access_mode')
-                        ->label('Access mode')
+                        ->label('Collection Mode')
                         ->options(AccessMode::class)
-                        ->default(AccessMode::Auto->value)
+                        ->default(AccessMode::Scraping->value)
                         ->selectablePlaceholder(false)
-                        ->hintIcon(Icons::Help->value, 'Auto uses a configured API when the operation is supported, otherwise scraping'),
+                        ->live()
+                        ->hintIcon(Icons::Help->value, 'Api requires a configured provider for this marketplace; Scraping visits product pages directly; Agentic autonomously discovers new products via Hermes'),
                 ])->columns(2),
+
+                Section::make('Api credentials')
+                    ->description('Credentials this marketplace\'s API needs.')
+                    ->schema(fn (Get $get): array => self::apiCredentialFields($get('marketplace_id')))
+                    ->statePath('settings.api_credentials')
+                    ->columns(2)
+                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Api->value),
+
+                Section::make('Proxy')
+                    ->description('Proxy settings used when scraping this store. Most major marketplaces block unproxied scraping.')
+                    ->schema(self::proxyFormFields())
+                    ->columns(2)
+                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Scraping->value),
+
+                Section::make('Discovery')
+                    ->description('Finds new products matching this niche. Agentic browses the URLs below with Hermes; Api queries the marketplace directly, when it supports discovery.')
+                    ->schema(self::agenticFormFields())
+                    ->columns(2)
+                    ->visible(fn (Get $get): bool => in_array($get('access_mode'), [AccessMode::Agentic->value, AccessMode::Api->value], true)),
 
                 Forms\Components\Group::make([
                     Section::make('Title strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('title', self::DEFAULT_SELECTORS['title']))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('title', self::DEFAULT_SELECTORS['title'], required: self::isScrapingMode()))->columns(2),
                     ])->description('How to get the product title'),
                     Section::make('Original price strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('original_price', required: false))->columns(2),
                     ])->description('How to get the original product price'),
                     Section::make('Price strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('price', self::DEFAULT_SELECTORS['price']))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('price', self::DEFAULT_SELECTORS['price'], required: self::isScrapingMode()))->columns(2),
                     ])->description('How to get the product price'),
                     Section::make('Image strategy')->schema([
-                        Forms\Components\Group::make(self::makeStrategyInput('image', self::DEFAULT_SELECTORS['image']))->columns(2),
+                        Forms\Components\Group::make(self::makeStrategyInput('image', self::DEFAULT_SELECTORS['image'], required: self::isScrapingMode()))->columns(2),
                     ])->description('How to get the product image'),
                     Section::make('Availability strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('availability', required: false))->columns(2),
@@ -123,7 +146,7 @@ class StoreResource extends Resource
                                             ])
                                             ->default('match')
                                             ->afterStateHydrated(fn (Forms\Components\Select $component, ?string $state) => $component->state($state ?? 'match'))
-                                            ->required(),
+                                            ->required(self::isScrapingMode()),
                                         TextInput::make('availability.match.'.$status->value.'.value')
                                             ->label($status->getLabel())
                                             ->hintIcon($status->getIcon(), 'If the scraped text matches this value, the product will be marked as "'.$status->getLabel().'"'),
@@ -143,21 +166,26 @@ class StoreResource extends Resource
                             ->options(StockStatus::class)
                             ->default(StockStatus::InStock->value)
                             ->afterStateHydrated(fn (Forms\Components\Select $component, ?string $state) => $component->state($state ?? StockStatus::InStock->value))
-                            ->required()
+                            ->required(self::isScrapingMode())
                             ->hintIcon(Icons::Help->value, 'The status to use when the scraped text does not match any of the values above')
                             ->hidden(fn (Get $get): bool => $get('availability.type') === ScraperStrategyType::SchemaOrg->value),
                     ])->description('Optional: a selector that matches product availability.')
                         ->collapsed(fn (Get $get): bool => ($get('availability.value') ?? '') === ''),
                 ])
                     ->label('Scrape Strategy')
-                    ->statePath('scrape_strategy'),
+                    ->statePath('scrape_strategy')
+                    ->visible(self::isScrapingMode()),
 
-                self::getScraperSettings(),
+                self::getScraperSettings()
+                    ->visible(self::isScrapingMode()),
 
                 Section::make('Locale')
                     ->description(__('Override region and locale settings for this store'))
                     ->columns(2)
-                    ->schema(AppSettingsPage::getLocaleFormFields('settings.locale_settings')),
+                    ->schema(collect(AppSettingsPage::getLocaleFormFields('settings.locale_settings'))
+                        ->map(fn ($field) => $field->required(self::isScrapingMode()))
+                        ->all())
+                    ->visible(self::isScrapingMode()),
 
                 Section::make('Cookies')->schema([
                     TextInput::make('cookies')
@@ -171,6 +199,168 @@ class StoreResource extends Resource
                 ])->description('Additional notes regarding this store and how to scrape its content'),
             ])
             ->columns(1);
+    }
+
+    /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function apiCredentialFields(?string $marketplaceId): array
+    {
+        $providerClass = $marketplaceId !== null
+            ? (string) config('product_data.providers.'.$marketplaceId)
+            : '';
+
+        if ($providerClass === '' || ! is_a($providerClass, ProductDataProvider::class, true)) {
+            return [
+                Forms\Components\Placeholder::make('no_api_provider')
+                    ->hiddenLabel()
+                    ->content($marketplaceId === null
+                        ? 'Select a Marketplace above to configure its API credentials.'
+                        : 'No API integration is implemented for this marketplace yet.'),
+            ];
+        }
+
+        $fields = $providerClass::credentialFields();
+
+        return $fields === []
+            ? [
+                Forms\Components\Placeholder::make('no_api_credentials')
+                    ->hiddenLabel()
+                    ->content('This marketplace\'s API integration needs no credentials.'),
+            ]
+            : $fields;
+    }
+
+    /**
+     * @return \Closure(Get): bool
+     */
+    protected static function isScrapingMode(): \Closure
+    {
+        return fn (Get $get): bool => $get('access_mode') === AccessMode::Scraping->value;
+    }
+
+    /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function proxyFormFields(): array
+    {
+        return [
+            Select::make('settings.proxy_mode')
+                ->label('Proxy mode')
+                ->options(ProxyMode::class)
+                ->placeholder('Use global default ('.(ProxyMode::tryFrom(config('scraping.proxy.mode'))?->name ?? ProxyMode::Disabled->name).')')
+                ->hintIcon(Icons::Help->value, 'Required always uses a proxy (and fails if none is available); Prefer uses one when available; Disabled never uses one. Most major marketplaces block unproxied scraping.'),
+        ];
+    }
+
+    /**
+     * Niche/target fields shared by Agentic (Hermes) and Api-driven discovery —
+     * both ultimately loop over the same Store.tags to find new candidates,
+     * they just differ in how they search (browsing configured URLs vs
+     * querying the marketplace's API per niche).
+     *
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function discoveryFormFields(\Closure $isRequired): array
+    {
+        return [
+            Select::make('tags')
+                ->label('Niche (Tags)')
+                ->relationship('tags', 'name')
+                ->multiple()
+                ->required($isRequired)
+                ->preload()
+                ->searchable()
+                ->columnSpanFull(),
+
+            TextInput::make('agent_max_products')
+                ->label('Minimum new products')
+                ->helperText('Stop after this many new products are created. Existing products do not count.')
+                ->numeric()
+                ->integer()
+                ->minValue(1)
+                ->default(10)
+                ->required($isRequired),
+
+            TextInput::make('agent_min_discount_percentage')
+                ->label('Minimum discount (%)')
+                ->numeric()
+                ->minValue(0)
+                ->maxValue(100)
+                ->default(20)
+                ->suffix('%')
+                ->required($isRequired),
+
+            // Quality floor, on top of the discount floor above. Api providers
+            // (e.g. Shopee) read these straight from the marketplace's own
+            // sales/rating fields; Hermes has the LLM report the same signals
+            // when visibly shown on the page, so both paths honor it.
+            TextInput::make('discovery_min_sales')
+                ->label('Minimum sales (historical)')
+                ->helperText('Skip candidates with fewer historical sales than this. Filters out unproven/low-appeal listings. 0 = no minimum.')
+                ->numeric()
+                ->integer()
+                ->minValue(0)
+                ->default(0),
+
+            TextInput::make('discovery_min_rating')
+                ->label('Minimum rating')
+                ->helperText('Skip candidates — and, when fanning out by shop, shops — rated below this (0-5 scale). Filters out unqualified sellers. 0 = no minimum.')
+                ->numeric()
+                ->minValue(0)
+                ->maxValue(5)
+                ->step(0.1)
+                ->default(0),
+        ];
+    }
+
+    /**
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function agenticFormFields(): array
+    {
+        $isAgentic = fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value;
+        $isAgenticOrApi = fn (Get $get): bool => in_array($get('access_mode'), [
+            AccessMode::Agentic->value, AccessMode::Api->value,
+        ], true);
+
+        return [
+            ...self::discoveryFormFields($isAgenticOrApi),
+
+            // Only Agentic (Hermes) browses starting URLs; Api-driven discovery
+            // queries the marketplace directly by niche instead.
+            Forms\Components\Repeater::make('agent_urls')
+                ->label('Visit URLs')
+                ->hintIcon(Icons::Help->value, 'URLs the agent should visit, in priority order')
+                ->schema([
+                    TextInput::make('url')
+                        ->label('URL')
+                        ->url()
+                        ->required()
+                        ->maxLength(2048),
+                ])
+                ->reorderable()
+                ->collapsible()
+                ->minItems(1)
+                ->itemLabel(fn (array $state): ?string => $state['url'] ?? null)
+                ->required($isAgentic)
+                ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Agentic->value)
+                ->columnSpanFull(),
+
+            // Only meaningful for Api: each niche gets its own API query, so a
+            // floor across tags is deterministic (unlike Agentic, where niches
+            // share the same browsed pages).
+            TextInput::make('discovery_min_percentage_per_tag')
+                ->label('Minimum per niche (%)')
+                ->helperText('Guarantee at least this share of the target from each niche before filling the rest from any. 0 = no floor (first-come-first-served across niches).')
+                ->numeric()
+                ->minValue(0)
+                ->maxValue(100)
+                ->default(0)
+                ->suffix('%')
+                ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Api->value)
+                ->columnSpanFull(),
+        ];
     }
 
     public static function testForm(Form $form, Store $store): Form
@@ -299,13 +489,13 @@ class StoreResource extends Resource
                         ->formatStateUsing(fn (string $state) => $state.' products')
                         ->extraAttributes(['class' => 'min-w-36 md:flex md:justify-end pr-4'])
                         ->grow(false),
-                    TextColumn::make('settings.scraper_service')
-                        ->label('Scraper')
+                    TextColumn::make('access_mode')
+                        ->label('Collection Mode')
                         ->badge()
                         ->sortable()
                         ->extraAttributes(['class' => 'min-w-16'])
-                        ->formatStateUsing(fn (string $state) => strtoupper($state))
-                        ->color(fn (Store $record): array => ScraperService::tryFrom($record->scraper_service)->getColor())
+                        ->formatStateUsing(fn (AccessMode $state) => strtoupper($state->value))
+                        ->color(fn (AccessMode $state): array => $state->getColor())
                         ->grow(false),
                 ])->from('sm'),
 
@@ -313,9 +503,9 @@ class StoreResource extends Resource
             ->paginated(AdminPanelProvider::DEFAULT_PAGINATION)
             ->defaultSort('name')
             ->filters([
-                SelectFilter::make('settings->scraper_service')
-                    ->options(ScraperService::class)
-                    ->label('Scraper'),
+                SelectFilter::make('access_mode')
+                    ->options(AccessMode::class)
+                    ->label('Collection Mode'),
             ])
             ->actions([
                 EditAction::make(),

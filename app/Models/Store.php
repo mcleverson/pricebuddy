@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Support\Arr;
@@ -62,6 +63,12 @@ class Store extends Model
         'notes',
         'user_id',
         'cookies',
+        'agent_urls',
+        'agent_max_products',
+        'agent_min_discount_percentage',
+        'discovery_min_percentage_per_tag',
+        'discovery_min_sales',
+        'discovery_min_rating',
     ];
 
     protected function casts(): array
@@ -71,6 +78,12 @@ class Store extends Model
             'scrape_strategy' => StoreScraperStrategySetCast::class,
             'settings' => 'array',
             'access_mode' => AccessMode::class,
+            'agent_urls' => 'array',
+            'agent_max_products' => 'integer',
+            'agent_min_discount_percentage' => 'decimal:2',
+            'discovery_min_percentage_per_tag' => 'integer',
+            'discovery_min_sales' => 'integer',
+            'discovery_min_rating' => 'decimal:2',
         ];
     }
 
@@ -114,6 +127,13 @@ class Store extends Model
     public function urls(): HasMany
     {
         return $this->hasMany(Url::class);
+    }
+
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class, 'store_tag')
+            ->orderBy('name')
+            ->withTimestamps();
     }
 
     public function products(): HasManyThrough
@@ -240,6 +260,11 @@ class Store extends Model
                     $options['wait-until'] = $waitUntil;
                 }
 
+                $proxyMode = data_get($this->settings, 'proxy_mode');
+                if (filled($proxyMode)) {
+                    $options['proxy_mode'] = $proxyMode;
+                }
+
                 return $options;
             }
         );
@@ -275,6 +300,39 @@ class Store extends Model
         return collect($this->domains)
             ->pluck('domain')
             ->contains($domain);
+    }
+
+    /**
+     * Get allowed hosts from the agent visit URLs and this store's own domains,
+     * for use as the Hermes agentic discovery allow-list.
+     *
+     * @return array<int, string>
+     */
+    public function allowedHosts(): array
+    {
+        $hosts = [];
+
+        foreach ((array) $this->agent_urls as $url) {
+            $url = is_array($url) ? ($url['url'] ?? null) : $url;
+            if (! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $host = parse_url($url, PHP_URL_HOST);
+            if (is_string($host) && $host !== '') {
+                $hosts[] = strtolower($host);
+            }
+        }
+
+        foreach ((array) $this->domains as $domain) {
+            if (is_string($domain) && $domain !== '') {
+                $hosts[] = strtolower($domain);
+            } elseif (is_array($domain) && isset($domain['domain'])) {
+                $hosts[] = strtolower((string) $domain['domain']);
+            }
+        }
+
+        return array_values(array_unique(array_filter($hosts)));
     }
 
     public function getAiHealFailedAt(): ?Carbon

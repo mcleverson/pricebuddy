@@ -5,9 +5,7 @@ namespace App\Services\ProductData;
 use App\Enums\AccessMode;
 use App\Enums\ProductDataOperation;
 use App\Exceptions\ProductDataAccessException;
-use App\Models\ProductSource;
 use App\Models\Store;
-use Illuminate\Support\Collection;
 
 class ProductDataGateway
 {
@@ -43,22 +41,29 @@ class ProductDataGateway
     }
 
     /**
-     * Search a Product Source, preserving its existing HTML extraction fallback.
-     *
-     * @param  callable(): Collection<int, array<string, mixed>>  $scrapingFallback
-     * @return Collection<int, array<string, mixed>>
+     * Resolve a ready-to-use affiliate link for a URL, when this store's access
+     * mode is Api and its provider supports generating one (e.g. Shopee). Callers
+     * are expected to cache the result — this always makes a network call.
      */
-    public function productSearch(ProductSource $source, string $query, callable $scrapingFallback): Collection
+    public function affiliateLink(Store $store, string $url): ?string
     {
-        $result = $this->run(
-            $source,
-            ProductDataOperation::ProductSearch,
-            ['source' => $source, 'query' => $query],
-            $scrapingFallback,
-            $source->search_url,
-        );
+        if ($this->accessMode($store) !== AccessMode::Api) {
+            return null;
+        }
 
-        return $result instanceof Collection ? $result : collect($result);
+        $marketplace = $this->marketplaces->resolve($store->marketplace_id, $url);
+        $provider = $this->providers->resolve($marketplace);
+
+        if ($provider === null
+            || ! $provider->isConfigured($store)
+            || ! $provider->supports($store, ProductDataOperation::AffiliateLink)) {
+            return null;
+        }
+
+        $result = $provider->fetch($store, ProductDataOperation::AffiliateLink, ['store' => $store, 'url' => $url]);
+        $link = is_array($result) ? data_get($result, 'affiliate_url') : null;
+
+        return is_string($link) && $link !== '' ? $link : null;
     }
 
     /**
@@ -66,7 +71,7 @@ class ProductDataGateway
      * @param  callable(): mixed  $scrapingFallback
      */
     protected function run(
-        Store|ProductSource $subject,
+        Store $subject,
         ProductDataOperation $operation,
         array $context,
         callable $scrapingFallback,
@@ -78,20 +83,11 @@ class ProductDataGateway
             return $scrapingFallback();
         }
 
-        if ($subject instanceof ProductSource) {
-            $subjectMarketplace = $subject->marketplace_id;
-
-            if (blank($subjectMarketplace)) {
-                $subjectMarketplace = $subject->store?->marketplace_id;
-            }
-        } else {
-            $subjectMarketplace = $subject->marketplace_id;
-        }
-        $marketplace = $this->marketplaces->resolve($subjectMarketplace, $url);
+        $marketplace = $this->marketplaces->resolve($subject->marketplace_id, $url);
         $provider = $this->providers->resolve($marketplace);
         $available = $provider !== null
-            && $provider->isConfigured()
-            && $provider->supports($operation);
+            && $provider->isConfigured($subject)
+            && $provider->supports($subject, $operation);
 
         if (! $available) {
             if ($mode === AccessMode::Api) {
@@ -105,10 +101,10 @@ class ProductDataGateway
             return $scrapingFallback();
         }
 
-        return $provider->fetch($operation, $context);
+        return $provider->fetch($subject, $operation, $context);
     }
 
-    protected function accessMode(Store|ProductSource $subject): AccessMode
+    protected function accessMode(Store $subject): AccessMode
     {
         $value = $subject->access_mode;
 

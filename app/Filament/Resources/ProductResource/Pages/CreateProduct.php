@@ -51,16 +51,4 @@ class CreateProduct extends CreateRecord
 
         return $product;
     }
-
-    public function getFooterWidgetsColumns(): int|array
-    {
-        return 1;
-    }
-
-    protected function getFooterWidgets(): array
-    {
-        return [
-            ProductResource\Widgets\CreateViaSearchForm::class,
-        ];
-    }
 }

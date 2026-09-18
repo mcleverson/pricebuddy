@@ -76,6 +76,8 @@ class IngestProductCandidateAction
             $urlModel = $product->urls()->create([
                 'url' => $url,
                 'store_id' => $candidate['store_id'],
+                'affiliate_url' => $candidate['affiliate_url'] ?? null,
+                'affiliate_url_synced_at' => filled($candidate['affiliate_url'] ?? null) ? now() : null,
             ]);
 
             $this->createPrice($urlModel, $candidate);

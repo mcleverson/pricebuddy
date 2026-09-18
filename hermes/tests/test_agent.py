@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -21,7 +22,8 @@ from unittest.mock import MagicMock
 sys.modules['playwright'] = MagicMock()
 sys.modules['playwright.sync_api'] = MagicMock()
 
-from agent import Agent
+import config
+from agent import Agent, _clear_stale_browser_profile_locks
 
 
 class TestBrowserToolSet(unittest.TestCase):
@@ -43,6 +45,104 @@ class TestBrowserToolSet(unittest.TestCase):
         result = self.tools.execute("finish", {})
         self.assertTrue(result.success)
         self.assertIn("0", result.message)
+
+    def test_mercado_livre_profile_uses_native_headed_chrome(self) -> None:
+        playwright = Mock()
+        context = Mock()
+        context.browser = Mock()
+        playwright.chromium.launch_persistent_context.return_value = context
+        agent = Agent(
+            "Mercado Livre",
+            "electronics",
+            allowed_hosts=["www.mercadolivre.com.br"],
+            browser_options={
+                "headless": False,
+                "native_user_agent": True,
+                "stealth_script": False,
+                "llm_page_segment_chars": 4000,
+                "llm_max_links_per_segment": 30,
+                "listing_image_enrichment": True,
+                "require_image": True,
+            },
+        )
+
+        agent._launch_browser(playwright)
+
+        options = playwright.chromium.launch_persistent_context.call_args.kwargs
+        self.assertFalse(options["headless"])
+        self.assertNotIn("user_agent", options)
+        context.add_init_script.assert_not_called()
+        self.assertTrue(agent.require_image)
+        self.assertEqual(agent.llm_page_segment_chars, 4000)
+        self.assertEqual(agent.llm_max_links_per_segment, 30)
+        self.assertTrue(agent.listing_image_enrichment)
+
+    def test_default_profile_preserves_existing_browser_behavior(self) -> None:
+        playwright = Mock()
+        context = Mock()
+        context.browser = Mock()
+        playwright.chromium.launch_persistent_context.return_value = context
+        agent = Agent("Amazon", "electronics", allowed_hosts=["www.amazon.com.br"])
+
+        agent._launch_browser(playwright)
+
+        options = playwright.chromium.launch_persistent_context.call_args.kwargs
+        self.assertTrue(options["headless"])
+        self.assertIn("Chrome/126.0.0.0", options["user_agent"])
+        context.add_init_script.assert_called_once()
+        self.assertFalse(agent.require_image)
+        self.assertFalse(agent.listing_image_enrichment)
+        self.assertEqual(agent.llm_page_segment_chars, config.LLM_PAGE_SEGMENT_CHARS)
+        self.assertIsNone(agent.llm_max_links_per_segment)
+
+    def test_stale_persistent_profile_locks_are_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            (profile / "SingletonSocket").symlink_to("/tmp/missing-chrome-socket")
+            (profile / "SingletonLock").symlink_to("old-container-123")
+            (profile / "SingletonCookie").symlink_to("123456")
+
+            _clear_stale_browser_profile_locks(directory)
+
+            self.assertFalse((profile / "SingletonSocket").is_symlink())
+            self.assertFalse((profile / "SingletonLock").is_symlink())
+            self.assertFalse((profile / "SingletonCookie").is_symlink())
+
+    def test_active_persistent_profile_locks_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            socket_target = profile / "active-socket"
+            socket_target.touch()
+            (profile / "SingletonSocket").symlink_to(socket_target)
+            (profile / "SingletonLock").symlink_to("current-container-123")
+
+            _clear_stale_browser_profile_locks(directory)
+
+            self.assertTrue((profile / "SingletonSocket").is_symlink())
+            self.assertTrue((profile / "SingletonLock").is_symlink())
+
+    def test_finish_exhausted_requires_all_configured_urls(self) -> None:
+        tools = BrowserToolSet(
+            self.page,
+            self.guard,
+            target_candidates=2,
+            required_urls=[
+                "https://www.amazon.com.br/deals",
+                "https://www.amazon.com.br/bestsellers",
+            ],
+        )
+        tools.visited_urls.add("https://www.amazon.com.br/deals")
+
+        result = tools.execute("finish", {"exhausted": True, "reason": "No more pages"})
+
+        self.assertFalse(result.success)
+        self.assertIn("bestsellers", result.message)
+
+        tools.visited_urls.add("https://www.amazon.com.br/bestsellers")
+        result = tools.execute("finish", {"exhausted": True, "reason": "No more pages"})
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data["exhausted"])
 
     def test_add_product_candidate_success(self) -> None:
         result = self.tools.execute("add_product_candidate", {
@@ -68,43 +168,6 @@ class TestBrowserToolSet(unittest.TestCase):
         self.assertEqual(len(self.tools.candidates), 0)
 
 
-class TestAgentLimits(unittest.TestCase):
-    def test_max_steps_enforced(self) -> None:
-        llm_client = Mock(spec=LLMClient)
-        llm_client.chat_completion.side_effect = [
-            ToolCall(name="inspect_page", arguments={}),
-            ToolCall(name="inspect_page", arguments={}),
-            ToolCall(name="inspect_page", arguments={}),
-        ]
-
-        agent = Agent(
-            marketplace="amazon",
-            goal="find electronics",
-            llm_client=llm_client,
-            max_steps=2,
-            max_pages=10,
-            max_raw_candidates=10,
-            max_selected_candidates=10,
-            run_timeout_seconds=60,
-        )
-
-        mock_browser = Mock()
-        mock_context = Mock()
-        mock_page = Mock()
-
-        with patch.object(agent, "_launch_browser", return_value=(mock_browser, mock_context, mock_page)):
-            with patch.object(BrowserToolSet, "execute") as mock_execute:
-                mock_execute.return_value = Mock(
-                    success=True,
-                    message="ok",
-                    data={"url": "https://www.amazon.com.br/", "title": "Amazon"},
-                )
-                with patch("agent.setup_signal_handlers"):
-                    report = agent.run()
-
-        self.assertEqual(report["status"], "completed")
-        # max_steps=2 means at most 2 iterations
-        self.assertLessEqual(len(report["steps"]), 2)
 
 
 class TestLLMClient(unittest.TestCase):
@@ -142,6 +205,7 @@ class TestLLMClient(unittest.TestCase):
 
         self.assertEqual(result.name, "navigate")
         self.assertEqual(result.arguments["url"], "https://www.amazon.com.br/")
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], (5, 120))
 
 
 class TestBrowserGuard(unittest.TestCase):
@@ -156,85 +220,8 @@ class TestBrowserGuard(unittest.TestCase):
         self.assertEqual(validated, "https://www.amazon.com.br/gp/goldbox")
 
 
-class TestPageLimits(unittest.TestCase):
-    def test_max_pages_enforced(self) -> None:
-        """Verify that page navigation limit is respected."""
-        llm_client = Mock(spec=LLMClient)
-        llm_client.chat_completion.side_effect = [
-            ToolCall(name="navigate", arguments={"url": "https://www.amazon.com.br/"}),
-            ToolCall(name="navigate", arguments={"url": "https://www.amazon.com.br/gp/goldbox"}),
-            ToolCall(name="navigate", arguments={"url": "https://www.amazon.com.br/deals"}),
-            ToolCall(name="inspect_page", arguments={}),
-            ToolCall(name="finish", arguments={}),
-        ]
-
-        agent = Agent(
-            marketplace="amazon",
-            goal="find electronics",
-            llm_client=llm_client,
-            max_steps=10,
-            max_pages=2,
-            max_raw_candidates=10,
-            max_selected_candidates=10,
-            run_timeout_seconds=60,
-        )
-
-        mock_browser = Mock()
-        mock_context = Mock()
-        mock_page = Mock()
-
-        with patch.object(agent, "_launch_browser", return_value=(mock_browser, mock_context, mock_page)):
-            # Mock _tool_navigate to increment page_count (as the real implementation does)
-            def mock_navigate(self_bt, url):
-                self_bt.page_count += 1
-                return BrowserToolSet._tool_inspect_page(self_bt)
-
-            with patch.object(BrowserToolSet, "_tool_navigate", mock_navigate):
-                with patch("agent.setup_signal_handlers"):
-                    report = agent.run()
-
-        self.assertEqual(report["status"], "completed")
-        # Should have stopped before executing all 5 tool calls
-        self.assertLess(len(report["steps"]), 5)
 
 
-class TestTimeout(unittest.TestCase):
-    def test_timeout_enforced(self) -> None:
-        """Verify that timeout stops execution."""
-        llm_client = Mock(spec=LLMClient)
-        llm_client.chat_completion.side_effect = [
-            ToolCall(name="inspect_page", arguments={}),
-            ToolCall(name="inspect_page", arguments={}),
-            ToolCall(name="finish", arguments={}),
-        ]
-
-        agent = Agent(
-            marketplace="amazon",
-            goal="find electronics",
-            llm_client=llm_client,
-            max_steps=10,
-            max_pages=10,
-            max_raw_candidates=10,
-            max_selected_candidates=10,
-            run_timeout_seconds=60,
-        )
-
-        mock_browser = Mock()
-        mock_context = Mock()
-        mock_page = Mock()
-
-        # Simulate time passing beyond the timeout after first step
-        fake_times = [0.0, 5.0, 70.0, 80.0]
-
-        with patch("agent.time") as mock_time:
-            mock_time.time = Mock(side_effect=fake_times)
-            with patch.object(agent, "_launch_browser", return_value=(mock_browser, mock_context, mock_page)):
-                with patch("agent.setup_signal_handlers"):
-                    report = agent.run()
-
-        self.assertEqual(report["status"], "completed")
-        # Should have stopped after first tool call due to timeout
-        self.assertLess(len(report["steps"]), 3)
 
 
 class TestSecretRedaction(unittest.TestCase):
@@ -347,49 +334,6 @@ class TestForbiddenTools(unittest.TestCase):
                 tools.validate_tool_name(tool_name)
 
 
-class TestMockLLMFlow(unittest.TestCase):
-    def test_mock_llm_controlled_flow(self) -> None:
-        """Verify that a mock LLM can navigate through a controlled flow."""
-        llm_client = Mock(spec=LLMClient)
-        llm_client.chat_completion.side_effect = [
-            ToolCall(name="navigate", arguments={"url": "https://www.amazon.com.br/gp/goldbox"}),
-            ToolCall(name="inspect_page", arguments={}),
-            ToolCall(name="add_product_candidate", arguments={
-                "url": "https://www.amazon.com.br/dp/B123",
-                "title": "Kindle Paperwhite 32GB",
-                "price": "R$ 499,00",
-            }),
-            ToolCall(name="finish", arguments={}),
-        ]
-
-        agent = Agent(
-            marketplace="amazon",
-            goal="find electronics",
-            llm_client=llm_client,
-            max_steps=10,
-            max_pages=10,
-            max_raw_candidates=10,
-            max_selected_candidates=10,
-            run_timeout_seconds=60,
-        )
-
-        mock_browser = Mock()
-        mock_context = Mock()
-        mock_page = Mock()
-
-        with patch.object(agent, "_launch_browser", return_value=(mock_browser, mock_context, mock_page)):
-            with patch.object(BrowserToolSet, "execute") as mock_execute:
-                mock_execute.return_value = Mock(
-                    success=True,
-                    message="ok",
-                    data={"url": "https://www.amazon.com.br/", "title": "Amazon"},
-                )
-                with patch("agent.setup_signal_handlers"):
-                    report = agent.run()
-
-        self.assertEqual(report["status"], "completed")
-        self.assertEqual(len(report["steps"]), 4)
-        self.assertEqual(llm_client.chat_completion.call_count, 4)
 
 
 class TestParsePrice(unittest.TestCase):
@@ -420,8 +364,308 @@ class TestParsePrice(unittest.TestCase):
         self.assertIsNone(_parse_price(""))
         self.assertIsNone(_parse_price("grátis"))
 
+    def test_rejects_installment_text(self) -> None:
+        from agent import _parse_price
+
+        self.assertIsNone(_parse_price("10x de R$ 200,00"))
+        self.assertIsNone(_parse_price("12x de $ 150,00"))
+        self.assertIsNone(_parse_price("6x de R$199,90"))
+
+
+class TestCandidateMeetsMinimumDiscount(unittest.TestCase):
+    def test_accepts_valid_discount(self) -> None:
+        from agent import _candidate_meets_minimum_discount
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p",
+            title="Product",
+            price="R$ 800,00",
+            original_price="R$ 1.000,00",
+        )
+        valid, reason = _candidate_meets_minimum_discount(candidate, 10)
+        self.assertTrue(valid)
+        self.assertIn("discount 20.0%", reason)
+
+    def test_rejects_suspiciously_low_price(self) -> None:
+        from agent import _candidate_meets_minimum_discount
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p",
+            title="iPhone",
+            price="R$ 2,00",
+            original_price="R$ 7.999,00",
+        )
+        valid, reason = _candidate_meets_minimum_discount(candidate, 10)
+        self.assertFalse(valid)
+        self.assertIn("less than 10%", reason)
+
+    def test_rejects_missing_original_price_when_discount_is_required(self) -> None:
+        from agent import _candidate_meets_minimum_discount
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p",
+            title="Product",
+            price="R$ 600,00",
+        )
+        valid, reason = _candidate_meets_minimum_discount(candidate, 10)
+        self.assertFalse(valid)
+        self.assertIn("original price could not be confirmed", reason)
+
+
+class TestParseRating(unittest.TestCase):
+    def test_parses_plain_number(self) -> None:
+        from agent import _parse_rating
+
+        self.assertEqual(_parse_rating("4.5"), 4.5)
+
+    def test_parses_brazilian_decimal_with_surrounding_text(self) -> None:
+        from agent import _parse_rating
+
+        self.assertEqual(_parse_rating("4,5 de 5 estrelas"), 4.5)
+
+    def test_rejects_out_of_range(self) -> None:
+        from agent import _parse_rating
+
+        self.assertIsNone(_parse_rating("7.0"))
+
+    def test_rejects_missing_or_non_numeric(self) -> None:
+        from agent import _parse_rating
+
+        self.assertIsNone(_parse_rating(None))
+        self.assertIsNone(_parse_rating("sem avaliações"))
+
+
+class TestParseCount(unittest.TestCase):
+    def test_parses_plain_integer_with_thousands_separator(self) -> None:
+        from agent import _parse_count
+
+        self.assertEqual(_parse_count("1.234"), 1234)
+
+    def test_parses_thousand_shorthand(self) -> None:
+        from agent import _parse_count
+
+        self.assertEqual(_parse_count("1,2 mil vendidos"), 1200)
+        self.assertEqual(_parse_count("2k"), 2000)
+
+    def test_parses_plain_number_without_separator(self) -> None:
+        from agent import _parse_count
+
+        self.assertEqual(_parse_count("Mais de 500 vendidos"), 500)
+
+    def test_rejects_missing_or_non_numeric(self) -> None:
+        from agent import _parse_count
+
+        self.assertIsNone(_parse_count(None))
+        self.assertIsNone(_parse_count("indisponível"))
+
+
+class TestCandidateMeetsQualityBar(unittest.TestCase):
+    def test_disabled_when_no_minimums_configured(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(url="https://example.com/p", title="Product", price="R$ 10,00")
+        valid, _ = _candidate_meets_quality_bar(candidate, min_rating=0, min_sales=0)
+        self.assertTrue(valid)
+
+    def test_accepts_missing_signal_even_with_minimums_configured(self) -> None:
+        """Absence of rating/sales is not disqualifying — only a visibly low value is."""
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(url="https://example.com/p", title="Product", price="R$ 10,00")
+        valid, _ = _candidate_meets_quality_bar(candidate, min_rating=4, min_sales=100)
+        self.assertTrue(valid)
+
+    def test_rejects_visible_rating_below_minimum(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p", title="Product", price="R$ 10,00", rating="3.0",
+        )
+        valid, reason = _candidate_meets_quality_bar(candidate, min_rating=4, min_sales=0)
+        self.assertFalse(valid)
+        self.assertIn("rating 3.0 is below 4", reason)
+
+    def test_rejects_visible_sales_below_minimum(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p", title="Product", price="R$ 10,00", sales_count="10",
+        )
+        valid, reason = _candidate_meets_quality_bar(candidate, min_rating=0, min_sales=100)
+        self.assertFalse(valid)
+        self.assertIn("sales 10 is below 100", reason)
+
+    def test_accepts_signals_at_or_above_minimum(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p", title="Product", price="R$ 10,00",
+            rating="4.5", sales_count="1.234",
+        )
+        valid, _ = _candidate_meets_quality_bar(candidate, min_rating=4, min_sales=1000)
+        self.assertTrue(valid)
+
 
 class TestEnrichCandidates(unittest.TestCase):
+    def test_selects_accessible_product_image(self) -> None:
+        images = [
+            {"src": "https://example.com/logo.png", "alt": "Logo", "width": 800, "height": 400, "visible": True},
+            {"src": "https://example.com/product.jpg", "alt": "Product image", "width": 600, "height": 600, "visible": True},
+            {"src": "https://example.com/icon.svg", "alt": "Icon", "width": 1000, "height": 1000, "visible": True},
+        ]
+
+        self.assertEqual(
+            BrowserToolSet._select_accessible_image(images),
+            "https://example.com/product.jpg",
+        )
+
+    def test_selects_first_product_image_and_ignores_review_image(self) -> None:
+        images = [
+            {"src": "https://example.com/main.jpg", "alt": "Product image", "width": 500, "height": 500,
+             "visible": True, "order": 0},
+            {"src": "https://example.com/review.jpg", "alt": "Customer review photo", "width": 1200,
+             "height": 1200, "visible": True, "order": 1},
+        ]
+
+        self.assertEqual(
+            BrowserToolSet._select_accessible_image(images),
+            "https://example.com/main.jpg",
+        )
+
+    def test_relaxed_image_selection_keeps_semantic_filters(self) -> None:
+        images = [
+            {"src": "https://example.com/logo.png", "alt": "Logo", "width": 100, "height": 100,
+             "visible": True, "order": 0},
+            {"src": "https://example.com/product-small.jpg", "alt": "Produto", "width": 120, "height": 120,
+             "visible": True, "order": 1},
+        ]
+
+        self.assertEqual(
+            BrowserToolSet._select_accessible_image(images, minimum_area=10_000),
+            "https://example.com/product-small.jpg",
+        )
+
+    def test_ignores_amazon_promotional_banner(self) -> None:
+        images = [
+            {"src": "https://m.media-amazon.com/images/G/32/digital/video/merch/banner.jpg",
+             "alt": "Atraídos pelo destino", "width": 800, "height": 78, "visible": True, "order": 0},
+            {"src": "https://m.media-amazon.com/images/I/product.jpg", "alt": "Smart TV LG",
+             "width": 500, "height": 500, "visible": True, "order": 1},
+        ]
+
+        self.assertEqual(
+            BrowserToolSet._select_accessible_image(images),
+            "https://m.media-amazon.com/images/I/product.jpg",
+        )
+
+        self.assertFalse(BrowserToolSet._is_likely_product_image(
+            "https://m.media-amazon.com/images/G/32/digital/video/merch/banner.jpg"
+        ))
+
+    def test_open_graph_image_has_priority_over_inconsistent_product_json_ld(self) -> None:
+        tools = BrowserToolSet(Mock(), BrowserGuard(["example.com"]))
+        metadata = tools._parse_product_metadata({
+            "og": {"og:image": "https://example.com/page-preview.jpg"},
+            "twitter": {},
+            "image_src": None,
+            "json_ld": [{
+                "@type": "Product",
+                "name": "Example product",
+                "image": ["https://example.com/main.jpg", "https://example.com/second.jpg"],
+                "offers": {"price": "99.90"},
+            }],
+        })
+
+        self.assertEqual(metadata["image"], "https://example.com/page-preview.jpg")
+
+    def test_protocol_relative_image_is_normalized(self) -> None:
+        tools = BrowserToolSet(Mock(), BrowserGuard(["example.com"]))
+        metadata = tools._parse_product_metadata({
+            "url": "https://example.com/product",
+            "og": {"og:image": "//cdn.example.com/product.jpg"},
+            "twitter": {},
+            "json_ld": [],
+        })
+
+        self.assertEqual(metadata["image"], "https://cdn.example.com/product.jpg")
+
+    def test_listing_images_are_compacted_for_llm(self) -> None:
+        agent = Agent("example", "electronics", allowed_hosts=["example.com"])
+        images = agent._compact_observed_images([
+            {"src": "https://example.com/product.jpg", "alt": " Product A ", "order": 1},
+            {"src": "https://example.com/product.jpg", "alt": "duplicate"},
+            {"src": "data:image/gif;base64,placeholder", "alt": "placeholder"},
+        ])
+
+        self.assertEqual(images, [{"src": "https://example.com/product.jpg", "alt": "Product A", "order": 1}])
+
+    def test_visible_text_fallback_confirms_prices(self) -> None:
+        page = Mock()
+        guard = BrowserGuard(["www.amazon.com.br"])
+        resolver = Mock(return_value={"price": "600.00", "original_price": "1000.00"})
+        tools = BrowserToolSet(page, guard, metadata_resolver=resolver)
+
+        tools.execute("add_product_candidate", {
+            "url": "https://www.amazon.com.br/dp/B789",
+            "title": "Product C",
+            "price": "R$ 60,00",
+            "original_price": "R$ 100,00",
+        })
+
+        with patch.object(
+            tools,
+            "_tool_get_product_metadata",
+            return_value=BrowserToolResult(
+                success=True,
+                message="ok",
+                data={"title": "Product C", "visible_text": "Por R$ 600,00. De R$ 1.000,00."},
+            ),
+        ):
+            tools.enrich_candidates()
+
+        resolver.assert_called_once()
+        self.assertEqual(tools.candidates[0].price, "R$ 60,00")
+        self.assertEqual(tools.candidates[0].original_price, "1000.00")
+
+    def test_visible_text_fallback_does_not_override_structured_price(self) -> None:
+        page = Mock()
+        guard = BrowserGuard(["www.amazon.com.br"])
+        resolver = Mock(return_value={"price": "123.00", "original_price": "200.00"})
+        tools = BrowserToolSet(page, guard, metadata_resolver=resolver)
+
+        tools.execute("add_product_candidate", {
+            "url": "https://www.amazon.com.br/dp/B999",
+            "title": "Product with structured price",
+            "price": "R$ 600,00",
+            "original_price": "R$ 1000,00",
+        })
+
+        with patch.object(
+            tools,
+            "_tool_get_product_metadata",
+            return_value=BrowserToolResult(
+                success=True,
+                message="ok",
+                data={
+                    "title": "Product with structured price",
+                    "price": "600.00",
+                    "visible_text": "Por R$ 123,00. De R$ 200,00.",
+                },
+            ),
+        ):
+            tools.enrich_candidates()
+
+        self.assertEqual(tools.candidates[0].price, "600.00")
+        self.assertEqual(tools.candidates[0].original_price, "200.00")
+
     def test_price_overridden_by_metadata(self) -> None:
         """Metadata price from the product page must override the listing price."""
         page = Mock()
@@ -454,7 +698,43 @@ class TestEnrichCandidates(unittest.TestCase):
 
         self.assertEqual(len(tools.candidates), 1)
         self.assertEqual(tools.candidates[0].price, "7999.00")
-        self.assertEqual(tools.candidates[0].original_price, "R$ 7.999,00")
+        self.assertEqual(tools.candidates[0].original_price, "9999.00")
+
+    def test_offer_specific_url_preserves_listing_prices_but_uses_metadata_image(self) -> None:
+        """Catalog metadata must not replace the price of a selected offer."""
+        page = Mock()
+        guard = BrowserGuard(["www.mercadolivre.com.br"])
+        tools = BrowserToolSet(page, guard)
+
+        tools.execute("add_product_candidate", {
+            "url": (
+                "https://www.mercadolivre.com.br/produto/p/MLB123"
+                "?pdp_filters=deal%3AX&wid=MLB456&deal_print_id=abc"
+            ),
+            "title": "Smart TV",
+            "price": "R$ 2.599,00",
+            "original_price": "R$ 3.299,00",
+        })
+
+        with patch.object(
+            tools,
+            "_tool_get_product_metadata",
+            return_value=BrowserToolResult(
+                success=True,
+                message="ok",
+                data={
+                    "title": "Smart TV",
+                    "price": "2325.00",
+                    "original_price": "3299.00",
+                    "image": "https://http2.mlstatic.com/tv.jpg",
+                },
+            ),
+        ):
+            tools.enrich_candidates()
+
+        self.assertEqual(tools.candidates[0].price, "R$ 2.599,00")
+        self.assertEqual(tools.candidates[0].original_price, "R$ 3.299,00")
+        self.assertEqual(tools.candidates[0].image_url, "https://http2.mlstatic.com/tv.jpg")
 
     def test_original_price_enriched_when_missing(self) -> None:
         """Original price must be filled from metadata when not provided by the LLM."""

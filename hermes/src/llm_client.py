@@ -30,7 +30,9 @@ class LLMClient:
         self.api_key = api_key or config.LLM_API_KEY
         self.model = model or config.LLM_MODEL
 
-    def chat_completion(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolCall:
+    def chat_completion(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                        timeout_seconds: float = 360,
+                        tool_choice: str | dict[str, Any] = "auto") -> ToolCall:
         """Call the LLM and return the next tool call."""
         if not self.base_url:
             raise LLMClientError("HERMES_LLM_BASE_URL is not configured")
@@ -41,7 +43,9 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "tools": tools,
-            "tool_choice": "auto",
+            "tool_choice": tool_choice,
+            "max_tokens": config.LLM_MAX_OUTPUT_TOKENS,
+            "chat_template_kwargs": {"enable_thinking": config.LLM_ENABLE_THINKING},
         }
 
         headers = {
@@ -49,30 +53,37 @@ class LLMClient:
             "Content-Type": "application/json",
         }
 
+        deadline = time.monotonic() + timeout_seconds
         last_exception = None
         for attempt in range(3):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LLMClientError("LLM run time budget exhausted")
             try:
                 response = requests.post(
                     f"{self.base_url}/chat/completions",
                     headers=headers,
                     json=payload,
-                    timeout=120,
+                    timeout=(
+                        min(5, remaining),
+                        min(config.LLM_REQUEST_TIMEOUT_SECONDS, remaining),
+                    ),
                 )
                 response.raise_for_status()
                 break
             except requests.HTTPError as exc:
                 last_exception = exc
-                status_code = exc.response.status_code if exc.response else None
+                status_code = exc.response.status_code if exc.response is not None else None
                 logger.warning("LLM request failed (attempt %d): HTTP %s - %s", attempt + 1, status_code, exc)
                 if attempt < 2:
-                    time.sleep(2 ** attempt)
+                    time.sleep(max(0, min(2 ** attempt, deadline - time.monotonic())))
                     continue
                 raise LLMClientError(f"LLM request failed: {exc}") from exc
             except requests.RequestException as exc:
                 last_exception = exc
                 logger.warning("LLM request failed (attempt %d): %s", attempt + 1, exc)
                 if attempt < 2:
-                    time.sleep(2 ** attempt)
+                    time.sleep(max(0, min(2 ** attempt, deadline - time.monotonic())))
                     continue
                 raise LLMClientError(f"LLM request failed: {exc}") from exc
         else:
@@ -88,7 +99,13 @@ class LLMClient:
         tool_calls = message.get("tool_calls")
 
         if not tool_calls:
-            raise LLMClientError(f"LLM did not return a tool call: {message}")
+            raise LLMClientError(
+                "LLM did not return a tool call "
+                f"(message_keys={sorted(message.keys())}, "
+                f"content_present={bool(message.get('content'))}, "
+                f"reasoning_present={bool(message.get('reasoning_content'))})",
+                retryable_tool_response=True,
+            )
 
         first_call = tool_calls[0]
         name = first_call.get("function", {}).get("name", "")
@@ -97,7 +114,13 @@ class LLMClient:
         try:
             arguments = json.loads(arguments_str)
         except json.JSONDecodeError as exc:
-            raise LLMClientError(f"Invalid tool call arguments JSON: {arguments_str}") from exc
+            raise LLMClientError(
+                "Invalid tool call arguments JSON",
+                retryable_tool_response=True,
+            ) from exc
+
+        if not isinstance(arguments, dict):
+            raise LLMClientError("Tool arguments must be a JSON object")
 
         logger.debug("LLM chose tool: %s", name)
         return ToolCall(name=name, arguments=arguments)
@@ -105,3 +128,7 @@ class LLMClient:
 
 class LLMClientError(Exception):
     """Raised when the LLM client cannot obtain a valid tool call."""
+
+    def __init__(self, message: str, retryable_tool_response: bool = False) -> None:
+        super().__init__(message)
+        self.retryable_tool_response = retryable_tool_response

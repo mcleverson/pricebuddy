@@ -71,7 +71,6 @@ Antes de alterar um fluxo existente, identifique:
 
 * quem chama esse código;
 * quais stores usam esse código;
-* quais product sources usam esse código;
 * quais strategies dependem dele;
 * como ele interage com proxy, scraping, APIs, banco e filas;
 * quais comportamentos podem sofrer regressão.
@@ -88,7 +87,7 @@ Da mesma forma, não altere a arquitetura de scraping existente apenas para acom
 
 Antes de implementar um novo provider ou marketplace:
 
-1. descubra como stores e product sources estão representados atualmente;
+1. descubra como stores e seu access_mode (api/scraping/agentic) estão representados atualmente;
 2. descubra como o sistema escolhe a estratégia de obtenção de dados;
 3. descubra onde proxy e scraping entram no fluxo;
 4. determine o menor ponto de extensão possível.
@@ -277,10 +276,9 @@ Entre os fluxos relevantes estão:
 
 * marketplaces como Shopee, Amazon, Mercado Livre, Magalu e AliExpress;
 * coleta de produtos;
-* stores;
-* product sources;
+* stores (access_mode: api, scraping ou agentic);
+* descoberta de produtos via Hermes (agentic) ou via API do marketplace (ex.: Shopee);
 * comparação de preços;
-* SearXNG e fontes externas de comparação;
 * identificação de preço atual e preço original quando disponível;
 * adaptação para links de afiliados;
 * cupons;

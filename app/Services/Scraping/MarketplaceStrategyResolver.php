@@ -3,12 +3,7 @@
 namespace App\Services\Scraping;
 
 use App\Contracts\MarketplaceBrowserStrategy;
-use App\Services\Scraping\Marketplace\AliExpressBrowserStrategy;
-use App\Services\Scraping\Marketplace\AmazonBrowserStrategy;
 use App\Services\Scraping\Marketplace\DefaultMarketplaceBrowserStrategy;
-use App\Services\Scraping\Marketplace\MagaluBrowserStrategy;
-use App\Services\Scraping\Marketplace\MercadoLivreBrowserStrategy;
-use App\Services\Scraping\Marketplace\ShopeeBrowserStrategy;
 use Illuminate\Support\Uri;
 
 class MarketplaceStrategyResolver
@@ -18,15 +13,21 @@ class MarketplaceStrategyResolver
      */
     protected array $strategies;
 
-    public function __construct()
+    /**
+     * @param  iterable<MarketplaceBrowserStrategy>|null  $strategies
+     */
+    public function __construct(?iterable $strategies = null)
     {
-        $this->strategies = [
-            new MercadoLivreBrowserStrategy,
-            new ShopeeBrowserStrategy,
-            new AmazonBrowserStrategy,
-            new MagaluBrowserStrategy,
-            new AliExpressBrowserStrategy,
-        ];
+        $configured = $strategies ?? config('scraping.marketplace_strategies', []);
+
+        $this->strategies = [];
+        foreach ($configured as $strategy) {
+            $resolved = is_string($strategy) ? app($strategy) : $strategy;
+
+            if ($resolved instanceof MarketplaceBrowserStrategy) {
+                $this->strategies[] = $resolved;
+            }
+        }
     }
 
     public function resolve(string $url): MarketplaceBrowserStrategy

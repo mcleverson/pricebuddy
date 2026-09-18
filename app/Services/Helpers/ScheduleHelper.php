@@ -4,7 +4,6 @@ namespace App\Services\Helpers;
 
 use App\Console\Commands\FetchAll;
 use App\Console\Commands\FetchDue;
-use App\Models\UrlResearch;
 use Illuminate\Console\Scheduling\Schedule;
 use Lorisleiva\CronTranslator\CronTranslator;
 use Throwable;
@@ -49,8 +48,6 @@ class ScheduleHelper
             ->withoutOverlapping(5);
         // Prune old log messages
         $schedule->command('model:prune', ['--model' => [LogMessage::class]])->daily();
-        // Prune search research results.
-        $schedule->command('model:prune', ['--model' => [UrlResearch::class]])->daily();
         // Prune expired Sanctum tokens
         $schedule->command('sanctum:prune-expired', ['--hours' => 24])->daily();
     }

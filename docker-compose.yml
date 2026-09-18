@@ -60,12 +60,26 @@ services:
             context: .
             dockerfile: docker/hermes/Dockerfile
         image: pricebuddy-hermes:latest
+        restart: unless-stopped
+        # Temporário: permite que localhost no .env alcance o OmniRoute no host.
+        # Substituir por uma rede privada com o serviço omniroute no Compose.
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
         environment:
             PRICEBUDDY_API_BASE_URL: http://app/api
-            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            PRICEBUDDY_API_TOKEN: ${PRICEBUDDY_API_TOKEN:-}
             HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
             HERMES_HTTP_PROXY: ${HERMES_HTTP_PROXY:-}
             HERMES_DEFAULT_TAG: ${HERMES_DEFAULT_TAG:-}
+            HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
+            HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+            HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:-}
+            HERMES_LLM_ENABLE_THINKING: ${HERMES_LLM_ENABLE_THINKING:-true}
+            HERMES_LLM_REQUEST_TIMEOUT_SECONDS: ${HERMES_LLM_REQUEST_TIMEOUT_SECONDS:-120}
+            HERMES_LLM_MAX_OUTPUT_TOKENS: ${HERMES_LLM_MAX_OUTPUT_TOKENS:-4096}
+            HERMES_LLM_PAGE_SEGMENT_CHARS: ${HERMES_LLM_PAGE_SEGMENT_CHARS:-12000}
+            HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
+            HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
         depends_on:
             app:
                 condition: service_started
@@ -73,8 +87,8 @@ services:
             - hermes_chromium_profile:/home/hermes/.config/chromium
         networks:
             - hermes_app
-        ports:
-            - 8000:8000
+        expose:
+            - 8000
         healthcheck:
             test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')" ]
             interval: 10s
@@ -89,7 +103,7 @@ services:
         image: pricebuddy-hermes:latest
         shm_size: "1gb"
         environment:
-            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            PRICEBUDDY_API_TOKEN: ${PRICEBUDDY_API_TOKEN:-}
             HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
             HERMES_HTTP_PROXY: ${HERMES_HTTP_PROXY:-}
             HERMES_DEFAULT_TAG: ${HERMES_DEFAULT_TAG:-}
@@ -112,9 +126,13 @@ services:
             dockerfile: docker/hermes/Dockerfile
         image: pricebuddy-hermes:latest
         shm_size: "1gb"
+        # Temporário: permite que localhost no .env alcance o OmniRoute no host.
+        # Substituir por uma rede privada com o serviço omniroute no Compose.
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
         environment:
             PRICEBUDDY_API_BASE_URL: http://app/api
-            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            PRICEBUDDY_API_TOKEN: ${PRICEBUDDY_API_TOKEN:-}
             HERMES_STORE_ID: ${HERMES_STORE_ID:-}
             HERMES_MIN_DISCOUNT_PERCENTAGE: ${HERMES_MIN_DISCOUNT_PERCENTAGE:-20}
             HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
@@ -123,10 +141,12 @@ services:
             HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
             HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
             HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:-}
-            HERMES_MAX_STEPS: ${HERMES_MAX_STEPS:-30}
+            HERMES_LLM_ENABLE_THINKING: ${HERMES_LLM_ENABLE_THINKING:-true}
+            HERMES_LLM_REQUEST_TIMEOUT_SECONDS: ${HERMES_LLM_REQUEST_TIMEOUT_SECONDS:-120}
+            HERMES_LLM_MAX_OUTPUT_TOKENS: ${HERMES_LLM_MAX_OUTPUT_TOKENS:-4096}
+            HERMES_LLM_PAGE_SEGMENT_CHARS: ${HERMES_LLM_PAGE_SEGMENT_CHARS:-12000}
             HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
-            HERMES_MAX_RAW_CANDIDATES: ${HERMES_MAX_RAW_CANDIDATES:-30}
-            HERMES_MAX_SELECTED_CANDIDATES: ${HERMES_MAX_SELECTED_CANDIDATES:-10}
+            HERMES_MIN_PRODUCTS: ${HERMES_MIN_PRODUCTS:-10}
             HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
         depends_on:
             app:
@@ -146,9 +166,13 @@ services:
             dockerfile: docker/hermes/Dockerfile
         image: pricebuddy-hermes:latest
         shm_size: "1gb"
+        # Temporário: permite que localhost no .env alcance o OmniRoute no host.
+        # Substituir por uma rede privada com o serviço omniroute no Compose.
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
         environment:
             PRICEBUDDY_API_BASE_URL: http://app/api
-            PRICEBUDDY_API_TOKEN: ${HERMES_PRICEBUDDY_API_TOKEN:-}
+            PRICEBUDDY_API_TOKEN: ${PRICEBUDDY_API_TOKEN:-}
             HERMES_STORE_ID: ${HERMES_STORE_ID:-}
             HERMES_MIN_DISCOUNT_PERCENTAGE: ${HERMES_MIN_DISCOUNT_PERCENTAGE:-20}
             HERMES_ALLOWED_HOSTS: ${HERMES_ALLOWED_HOSTS:-}
@@ -157,10 +181,12 @@ services:
             HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
             HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
             HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:-}
-            HERMES_MAX_STEPS: ${HERMES_MAX_STEPS:-30}
+            HERMES_LLM_ENABLE_THINKING: ${HERMES_LLM_ENABLE_THINKING:-true}
+            HERMES_LLM_REQUEST_TIMEOUT_SECONDS: ${HERMES_LLM_REQUEST_TIMEOUT_SECONDS:-120}
+            HERMES_LLM_MAX_OUTPUT_TOKENS: ${HERMES_LLM_MAX_OUTPUT_TOKENS:-4096}
+            HERMES_LLM_PAGE_SEGMENT_CHARS: ${HERMES_LLM_PAGE_SEGMENT_CHARS:-12000}
             HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
-            HERMES_MAX_RAW_CANDIDATES: ${HERMES_MAX_RAW_CANDIDATES:-30}
-            HERMES_MAX_SELECTED_CANDIDATES: ${HERMES_MAX_SELECTED_CANDIDATES:-10}
+            HERMES_MIN_PRODUCTS: ${HERMES_MIN_PRODUCTS:-10}
             HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
         depends_on:
             app:
