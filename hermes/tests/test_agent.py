@@ -415,6 +415,105 @@ class TestCandidateMeetsMinimumDiscount(unittest.TestCase):
         self.assertIn("original price could not be confirmed", reason)
 
 
+class TestParseRating(unittest.TestCase):
+    def test_parses_plain_number(self) -> None:
+        from agent import _parse_rating
+
+        self.assertEqual(_parse_rating("4.5"), 4.5)
+
+    def test_parses_brazilian_decimal_with_surrounding_text(self) -> None:
+        from agent import _parse_rating
+
+        self.assertEqual(_parse_rating("4,5 de 5 estrelas"), 4.5)
+
+    def test_rejects_out_of_range(self) -> None:
+        from agent import _parse_rating
+
+        self.assertIsNone(_parse_rating("7.0"))
+
+    def test_rejects_missing_or_non_numeric(self) -> None:
+        from agent import _parse_rating
+
+        self.assertIsNone(_parse_rating(None))
+        self.assertIsNone(_parse_rating("sem avaliações"))
+
+
+class TestParseCount(unittest.TestCase):
+    def test_parses_plain_integer_with_thousands_separator(self) -> None:
+        from agent import _parse_count
+
+        self.assertEqual(_parse_count("1.234"), 1234)
+
+    def test_parses_thousand_shorthand(self) -> None:
+        from agent import _parse_count
+
+        self.assertEqual(_parse_count("1,2 mil vendidos"), 1200)
+        self.assertEqual(_parse_count("2k"), 2000)
+
+    def test_parses_plain_number_without_separator(self) -> None:
+        from agent import _parse_count
+
+        self.assertEqual(_parse_count("Mais de 500 vendidos"), 500)
+
+    def test_rejects_missing_or_non_numeric(self) -> None:
+        from agent import _parse_count
+
+        self.assertIsNone(_parse_count(None))
+        self.assertIsNone(_parse_count("indisponível"))
+
+
+class TestCandidateMeetsQualityBar(unittest.TestCase):
+    def test_disabled_when_no_minimums_configured(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(url="https://example.com/p", title="Product", price="R$ 10,00")
+        valid, _ = _candidate_meets_quality_bar(candidate, min_rating=0, min_sales=0)
+        self.assertTrue(valid)
+
+    def test_accepts_missing_signal_even_with_minimums_configured(self) -> None:
+        """Absence of rating/sales is not disqualifying — only a visibly low value is."""
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(url="https://example.com/p", title="Product", price="R$ 10,00")
+        valid, _ = _candidate_meets_quality_bar(candidate, min_rating=4, min_sales=100)
+        self.assertTrue(valid)
+
+    def test_rejects_visible_rating_below_minimum(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p", title="Product", price="R$ 10,00", rating="3.0",
+        )
+        valid, reason = _candidate_meets_quality_bar(candidate, min_rating=4, min_sales=0)
+        self.assertFalse(valid)
+        self.assertIn("rating 3.0 is below 4", reason)
+
+    def test_rejects_visible_sales_below_minimum(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p", title="Product", price="R$ 10,00", sales_count="10",
+        )
+        valid, reason = _candidate_meets_quality_bar(candidate, min_rating=0, min_sales=100)
+        self.assertFalse(valid)
+        self.assertIn("sales 10 is below 100", reason)
+
+    def test_accepts_signals_at_or_above_minimum(self) -> None:
+        from agent import _candidate_meets_quality_bar
+        from browser_tools import ProductCandidate
+
+        candidate = ProductCandidate(
+            url="https://example.com/p", title="Product", price="R$ 10,00",
+            rating="4.5", sales_count="1.234",
+        )
+        valid, _ = _candidate_meets_quality_bar(candidate, min_rating=4, min_sales=1000)
+        self.assertTrue(valid)
+
+
 class TestEnrichCandidates(unittest.TestCase):
     def test_selects_accessible_product_image(self) -> None:
         images = [

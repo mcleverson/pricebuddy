@@ -22,15 +22,22 @@ use Illuminate\Support\Collection;
  */
 class ShopeeProvider extends ConfiguredProvider
 {
-    // sortType values, confirmed per query in the docs (they don't share a scale).
-    protected const PRODUCT_SORT_COMMISSION = 5;
+    // sortType/listType values, confirmed per query in the docs (each
+    // parameter has its own scale, they don't share one).
+    //
+    // Discovery deliberately sorts by sales rather than commission: a high
+    // commissionRate is often the seller paying more because the product
+    // otherwise has no organic demand (unknown brand, no track record) —
+    // optimizing for it is exactly why low-appeal candidates were surfacing.
+    // Sales/"top performance" biases toward products that actually sell.
+    protected const PRODUCT_SORT_SALES = 2;
 
-    protected const PRODUCT_LIST_HIGHEST_COMMISSION = 1;
+    protected const PRODUCT_LIST_TOP_PERFORMANCE = 2;
 
-    protected const SHOP_SORT_COMMISSION = 2;
+    protected const SHOP_SORT_POPULAR = 3;
 
-    // How many of a niche's top-commission shops to also pull products from,
-    // and how many products to take per shop.
+    // How many of a niche's top shops to also pull products from, and how
+    // many products to take per shop.
     protected const DISCOVERY_SHOP_FANOUT = 5;
 
     protected const DISCOVERY_PRODUCTS_PER_SHOP = 10;
@@ -48,6 +55,8 @@ class ShopeeProvider extends ConfiguredProvider
             priceDiscountRate
             commissionRate
             sellerCommissionRate
+            sales
+            ratingStar
         }
         GRAPHQL;
 
@@ -57,6 +66,8 @@ class ShopeeProvider extends ConfiguredProvider
             shopName
             commissionRate
             sellerCommCoveRatio
+            ratingStar
+            shopType
         }
         GRAPHQL;
 
@@ -158,12 +169,14 @@ class ShopeeProvider extends ConfiguredProvider
     {
         $tags = collect($context['tags'] ?? [])->filter()->values();
         $minDiscountPercentage = (float) ($context['min_discount_percentage'] ?? 0);
+        $minSales = (float) ($context['min_sales'] ?? 0);
+        $minRating = (float) ($context['min_rating'] ?? 0);
         $client = $this->client($store);
         $limit = min(50, max(10, (int) ($context['target_candidates'] ?? 20)));
         $results = collect();
 
         foreach ($tags as $tag) {
-            $results = $results->merge($this->productsByKeyword($client, $store, $tag, $limit, $minDiscountPercentage));
+            $results = $results->merge($this->productsByKeyword($client, $store, $tag, $limit, $minDiscountPercentage, $minSales, $minRating));
 
             foreach ($this->shopsByKeyword($client, $tag) as $shop) {
                 $shopId = data_get($shop, 'shopId');
@@ -172,8 +185,15 @@ class ShopeeProvider extends ConfiguredProvider
                     continue;
                 }
 
+                // Skip the fan-out entirely for shops that don't meet the
+                // quality bar, rather than only filtering their products
+                // after the fact — no point spending an extra query on them.
+                if (! $this->meetsMinimumRating($shop, $minRating)) {
+                    continue;
+                }
+
                 $results = $results->merge(
-                    $this->productsByShop($client, $store, (int) $shopId, $tag, self::DISCOVERY_PRODUCTS_PER_SHOP, $minDiscountPercentage),
+                    $this->productsByShop($client, $store, (int) $shopId, $tag, self::DISCOVERY_PRODUCTS_PER_SHOP, $minDiscountPercentage, $minSales, $minRating),
                 );
             }
         }
@@ -184,7 +204,7 @@ class ShopeeProvider extends ConfiguredProvider
     /**
      * @return Collection<int, array<string, mixed>>
      */
-    protected function productsByKeyword(ShopeeAffiliateClient $client, Store $store, string $tag, int $limit, float $minDiscountPercentage): Collection
+    protected function productsByKeyword(ShopeeAffiliateClient $client, Store $store, string $tag, int $limit, float $minDiscountPercentage, float $minSales, float $minRating): Collection
     {
         $query = <<<GRAPHQL
             query DiscoverProducts(\$keyword: String, \$sortType: Int, \$listType: Int, \$limit: Int) {
@@ -196,18 +216,18 @@ class ShopeeProvider extends ConfiguredProvider
 
         $data = $client->query($query, [
             'keyword' => $tag,
-            'sortType' => self::PRODUCT_SORT_COMMISSION,
-            'listType' => self::PRODUCT_LIST_HIGHEST_COMMISSION,
+            'sortType' => self::PRODUCT_SORT_SALES,
+            'listType' => self::PRODUCT_LIST_TOP_PERFORMANCE,
             'limit' => $limit,
         ]);
 
-        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag, $minDiscountPercentage);
+        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag, $minDiscountPercentage, $minSales, $minRating);
     }
 
     /**
      * @return Collection<int, array<string, mixed>>
      */
-    protected function productsByShop(ShopeeAffiliateClient $client, Store $store, int $shopId, string $tag, int $limit, float $minDiscountPercentage): Collection
+    protected function productsByShop(ShopeeAffiliateClient $client, Store $store, int $shopId, string $tag, int $limit, float $minDiscountPercentage, float $minSales, float $minRating): Collection
     {
         $query = <<<GRAPHQL
             query ProductsByShop(\$shopId: Int64, \$sortType: Int, \$limit: Int) {
@@ -222,11 +242,11 @@ class ShopeeProvider extends ConfiguredProvider
             // bare number — confirmed against the live API ("wrong type" 10010
             // otherwise).
             'shopId' => (string) $shopId,
-            'sortType' => self::PRODUCT_SORT_COMMISSION,
+            'sortType' => self::PRODUCT_SORT_SALES,
             'limit' => $limit,
         ]);
 
-        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag, $minDiscountPercentage);
+        return $this->mapProductNodes((array) data_get($data, 'productOfferV2.nodes', []), $store, $tag, $minDiscountPercentage, $minSales, $minRating);
     }
 
     /**
@@ -244,7 +264,7 @@ class ShopeeProvider extends ConfiguredProvider
 
         $data = $client->query($query, [
             'keyword' => $tag,
-            'sortType' => self::SHOP_SORT_COMMISSION,
+            'sortType' => self::SHOP_SORT_POPULAR,
             'limit' => self::DISCOVERY_SHOP_FANOUT,
         ]);
 
@@ -255,13 +275,15 @@ class ShopeeProvider extends ConfiguredProvider
      * @param  array<int, array<string, mixed>>  $nodes
      * @return Collection<int, array<string, mixed>>
      */
-    protected function mapProductNodes(array $nodes, Store $store, string $tag, float $minDiscountPercentage): Collection
+    protected function mapProductNodes(array $nodes, Store $store, string $tag, float $minDiscountPercentage, float $minSales, float $minRating): Collection
     {
         return collect($nodes)
             ->filter(fn (array $node): bool => filled(data_get($node, 'productLink'))
                 && filled(data_get($node, 'offerLink'))
                 && filled(data_get($node, 'priceMin')))
             ->filter(fn (array $node): bool => $this->meetsMinimumDiscount($node, $minDiscountPercentage))
+            ->filter(fn (array $node): bool => $this->meetsMinimumSales($node, $minSales))
+            ->filter(fn (array $node): bool => $this->meetsMinimumRating($node, $minRating))
             ->map(fn (array $node): array => [
                 // The canonical product page — not the affiliate short link — is
                 // what gets tracked as the product's url: it's the one
@@ -341,6 +363,43 @@ class ShopeeProvider extends ConfiguredProvider
         $discountRate = data_get($node, 'priceDiscountRate');
 
         return is_numeric($discountRate) && (float) $discountRate >= $minDiscountPercentage;
+    }
+
+    /**
+     * Same pattern as meetsMinimumDiscount(): enforced client-side against
+     * `sales`, since productOfferV2/shopOfferV2 have no minimum-sales query
+     * param. When no minimum is configured (0), every node passes regardless
+     * of sales data.
+     *
+     * @param  array<string, mixed>  $node
+     */
+    protected function meetsMinimumSales(array $node, float $minSales): bool
+    {
+        if ($minSales <= 0) {
+            return true;
+        }
+
+        $sales = data_get($node, 'sales');
+
+        return is_numeric($sales) && (float) $sales >= $minSales;
+    }
+
+    /**
+     * Same pattern as meetsMinimumDiscount(), against `ratingStar`. Also
+     * reused to gate shopOfferV2 nodes before fanning out into their
+     * products, since shops expose the same field.
+     *
+     * @param  array<string, mixed>  $node
+     */
+    protected function meetsMinimumRating(array $node, float $minRating): bool
+    {
+        if ($minRating <= 0) {
+            return true;
+        }
+
+        $rating = data_get($node, 'ratingStar');
+
+        return is_numeric($rating) && (float) $rating >= $minRating;
     }
 
     /**

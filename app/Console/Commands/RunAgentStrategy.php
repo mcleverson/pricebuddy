@@ -172,6 +172,8 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             'store_id' => $store->id,
             'min_products' => $store->agent_max_products,
             'min_discount_percentage' => $store->agent_min_discount_percentage,
+            'min_rating' => (float) $store->discovery_min_rating,
+            'min_sales' => (int) $store->discovery_min_sales,
         ];
 
         if ($this->option('dry-run')) {
@@ -182,7 +184,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         }
 
         try {
-            $response = Http::timeout(1200)
+            $response = Http::timeout(config('services.hermes.timeout'))
                 ->post(config('services.hermes.url', 'http://hermes:8000').'/discover', $payload);
 
             if (! $response->successful()) {
@@ -254,6 +256,8 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             $candidates = $provider->fetch($store, ProductDataOperation::Discovery, [
                 'tags' => $tags->all(),
                 'min_discount_percentage' => (float) $store->agent_min_discount_percentage,
+                'min_sales' => (float) $store->discovery_min_sales,
+                'min_rating' => (float) $store->discovery_min_rating,
                 'target_candidates' => $target,
             ]);
         } catch (\Throwable $exception) {

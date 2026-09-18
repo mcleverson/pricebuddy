@@ -36,6 +36,21 @@ class ProductCandidate:
     product, as chosen by the LLM. None when only 0-1 tags are configured
     (no ambiguity) or when the LLM couldn't confidently pick one — callers
     should fall back to applying every configured tag in that case."""
+    rating: str | None = None
+    """Visible star rating (e.g. "4.5"), as reported by the LLM from the
+    listing or backfilled from the product page's own JSON-LD
+    aggregateRating — never invented when not clearly shown."""
+    rating_count: str | None = None
+    """Visible review/rating count (e.g. "1234"), same sourcing as rating."""
+    sales_count: str | None = None
+    """Visible historical sales signal (e.g. "1000" from "Mais de 1000
+    vendidos"). Listing-only — marketplaces don't expose this declaratively,
+    so it is never backfilled from product metadata."""
+    official_store: bool | None = None
+    """True only when the listing carries an explicit official-store/sold-by
+    label (loja oficial, vendido pela {marketplace}, MercadoLíder
+    Platinum/Gold, etc). Listing-only, and null (not False) when no such
+    label is visible — the LLM is instructed never to infer this."""
 
 
 @dataclass
@@ -377,6 +392,8 @@ class BrowserToolSet:
                     "image": metadata.get("image"),
                     "description": metadata.get("description"),
                     "availability": metadata.get("availability"),
+                    "rating": metadata.get("rating"),
+                    "rating_count": metadata.get("rating_count"),
                     "visible_text": visible_text,
                 },
             )
@@ -535,6 +552,16 @@ class BrowserToolSet:
                         image_candidates.extend(image)
                     else:
                         image_candidates.append(image)
+
+                if not result.get("rating"):
+                    aggregate_rating = candidate.get("aggregateRating")
+                    if isinstance(aggregate_rating, dict):
+                        rating_value = aggregate_rating.get("ratingValue")
+                        if rating_value is not None:
+                            result["rating"] = str(rating_value)
+                        review_count = aggregate_rating.get("reviewCount") or aggregate_rating.get("ratingCount")
+                        if review_count is not None:
+                            result["rating_count"] = str(review_count)
 
                 offers = candidate.get("offers")
                 if offers:
@@ -758,6 +785,13 @@ class BrowserToolSet:
                             candidate.image_url = new_image
                         if data.get("original_price") and not self._is_offer_specific_url(candidate.url):
                             candidate.original_price = data["original_price"]
+                        # Backfill only — the listing's own visible rating (if
+                        # the LLM reported one) is at least as trustworthy as
+                        # the product page's declarative data.
+                        if data.get("rating") and not candidate.rating:
+                            candidate.rating = str(data["rating"])
+                        if data.get("rating_count") and not candidate.rating_count:
+                            candidate.rating_count = str(data["rating_count"])
             except Exception as exc:
                 candidate.metadata_checked = True
                 logger.warning("Failed to enrich candidate %s: %s", candidate.url, exc)

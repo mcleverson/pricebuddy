@@ -86,7 +86,13 @@ O preço a ser reportado é o preço à vista / preço atual do produto, mesmo q
 Se houver imagem do produto visível na listagem, inclua sua URL em image_url.
 Quando a observação trouxer uma lista `images`, use somente uma URL dessa lista para image_url; se não houver uma imagem claramente associada, use null.
 Priorize os sinais VISÍVEIS de procura (mais vendidos, compras, avaliações), depois o desconto aparente.
-Não invente popularidade, preços, links, imagens ou classificação de desconto real/histórico: isso cabe ao PriceBuddy.
+Quando houver avaliação em estrelas visível, informe em rating (ex: "4.5"); quando houver contagem de
+avaliações ou vendas visível (ex: "1.234 avaliações", "Mais de 500 vendidos"), informe em rating_count/
+sales_count apenas com os dígitos (ex: "1234", "500"). Marque official_store como true SOMENTE quando
+houver rótulo explícito de loja oficial/vendido e entregue pelo marketplace/selo equivalente de vendedor
+(ex: "Loja Oficial", "Vendido por {marketplace}", MercadoLíder Platinum/Gold) — caso contrário deixe null.
+Nunca invente popularidade, avaliação, vendedor, preços, links, imagens ou classificação de desconto
+real/histórico: isso cabe ao PriceBuddy.{quality_instruction}
 Não use seletores CSS/HTML, classes, IDs ou XPath. Não escolha outras categorias ou URLs para navegar.
 O código controla as URLs configuradas, paginação e a meta de {target_candidates} NOVOS produtos criados.
 Indique next_page_text apenas se houver um controle de próxima página ou número seguinte visível.
@@ -103,6 +109,10 @@ def _build_tools_schema(tags: list[str]) -> list[dict]:
         "price": {"type": "string"},
         "original_price": {"type": ["string", "null"]},
         "image_url": {"type": ["string", "null"]},
+        "rating": {"type": ["string", "null"]},
+        "rating_count": {"type": ["string", "null"]},
+        "sales_count": {"type": ["string", "null"]},
+        "official_store": {"type": ["boolean", "null"]},
     }
     if len(tags) > 1:
         candidate_properties["tag"] = {"type": ["string", "null"], "enum": [*tags, None]}
@@ -204,6 +214,72 @@ def _parse_price(value: str | None) -> float | None:
         return None
 
     return parsed
+
+
+def _parse_rating(value: str | None) -> float | None:
+    """Parse a star rating (e.g. "4.5", "4,5 de 5 estrelas") into a 0-5 float."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    match = re.search(r"\d+(?:[.,]\d+)?", value)
+    if not match:
+        return None
+    try:
+        rating = float(match.group(0).replace(",", "."))
+    except ValueError:
+        return None
+    if not math.isfinite(rating) or not 0 <= rating <= 5:
+        return None
+    return rating
+
+
+def _parse_count(value: str | None) -> int | None:
+    """Parse a visible count (e.g. "1.234", "1,2 mil", "500+") into an int."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().lower()
+    thousands = bool(re.search(r"\bmil\b|\d\s*k\b", text))
+    match = re.search(r"\d+(?:[.,]\d+)*", text)
+    if not match:
+        return None
+    digits = match.group(0)
+    # A single "," or "." followed by 1-2 digits is a decimal separator (only
+    # relevant with "mil"/"k", e.g. "1,2 mil"); otherwise treat every
+    # separator as a thousands marker, same convention as _parse_price.
+    if thousands and re.fullmatch(r"\d+[.,]\d{1,2}", digits):
+        digits = digits.replace(",", ".")
+        count = float(digits) * 1000
+    else:
+        digits = digits.replace(".", "").replace(",", "")
+        try:
+            count = float(digits)
+        except ValueError:
+            return None
+        if thousands:
+            count *= 1000
+    if not math.isfinite(count) or count < 0:
+        return None
+    return int(count)
+
+
+def _candidate_meets_quality_bar(
+    candidate: ProductCandidate,
+    min_rating: float,
+    min_sales: int,
+) -> tuple[bool, str]:
+    """Reject candidates below a configured rating/sales floor. Absence of the
+    signal itself is not disqualifying — many legitimate listings simply
+    don't show it — only an explicitly visible value below the floor is."""
+    if min_rating > 0:
+        rating = _parse_rating(candidate.rating)
+        if rating is not None and rating < min_rating:
+            return False, f"rating {rating} is below {min_rating}"
+
+    if min_sales > 0:
+        sales = _parse_count(candidate.sales_count)
+        if sales is not None and sales < min_sales:
+            return False, f"sales {sales} is below {min_sales}"
+
+    return True, "quality bar met"
 
 
 def _candidate_meets_minimum_discount(
@@ -377,6 +453,8 @@ class Agent:
         tags: list[str] | None = None,
         starting_urls: list[str] | None = None,
         min_discount_percentage: float = config.HERMES_MIN_DISCOUNT_PERCENTAGE,
+        min_rating: float = config.HERMES_MIN_RATING,
+        min_sales: int = config.HERMES_MIN_SALES,
         store_id: int | None = None,
         allowed_hosts: str | list[str] | tuple[str, ...] | None = None,
         browser_options: dict[str, Any] | None = None,
@@ -392,12 +470,18 @@ class Agent:
             raise ValueError("Page and time limits must be positive")
         if not math.isfinite(min_discount_percentage) or not 0 <= min_discount_percentage <= 100:
             raise ValueError("Minimum discount must be between 0 and 100")
+        if not math.isfinite(min_rating) or not 0 <= min_rating <= 5:
+            raise ValueError("Minimum rating must be between 0 and 5")
+        if min_sales < 0:
+            raise ValueError("Minimum sales must not be negative")
         self.run_timeout_seconds = run_timeout_seconds
         self.headless = headless
         self.tags = tags or []
         self._tools_schema = _build_tools_schema(self.tags)
         self.starting_urls = starting_urls or []
         self.min_discount_percentage = min_discount_percentage
+        self.min_rating = min_rating
+        self.min_sales = min_sales
         self.store_id = store_id if store_id is not None else config.HERMES_STORE_ID
 
         if allowed_hosts is None:
@@ -681,6 +765,10 @@ class Agent:
                         # anything else (hallucinated, or no ambiguity to resolve) falls back
                         # to every configured tag when the candidate is submitted.
                         tag=(item.get("tag") if item.get("tag") in self.tags else None),
+                        rating=(item.get("rating") if isinstance(item.get("rating"), str) else None),
+                        rating_count=(item.get("rating_count") if isinstance(item.get("rating_count"), str) else None),
+                        sales_count=(item.get("sales_count") if isinstance(item.get("sales_count"), str) else None),
+                        official_store=(item.get("official_store") if isinstance(item.get("official_store"), bool) else None),
                     )
                     metadata_tools.guard.validate_url(candidate.url)
                     if not isinstance(candidate.title, str) or not candidate.title.strip():
@@ -1012,6 +1100,17 @@ class Agent:
             'nem invente um fora da lista; se nenhum corresponder claramente, use null.'
             if len(self.tags) > 1 else ""
         )
+        quality_notes = []
+        if self.min_rating > 0:
+            quality_notes.append(f"avaliação abaixo de {self.min_rating}")
+        if self.min_sales > 0:
+            quality_notes.append(f"vendas abaixo de {self.min_sales}")
+        quality_instruction = (
+            " Não reporte candidatos cuja avaliação ou contagem de vendas visível esteja "
+            f"claramente abaixo do mínimo aceitável ({' e '.join(quality_notes)}); produtos sem "
+            "esses dados visíveis continuam elegíveis normalmente."
+            if quality_notes else ""
+        )
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             goal=self.goal,
             tags=", ".join(self.tags),
@@ -1019,6 +1118,7 @@ class Agent:
             min_discount_percentage=self.min_discount_percentage,
             target_candidates=self.target_candidates,
             tag_instruction=tag_instruction,
+            quality_instruction=quality_instruction,
         )
 
         return [{"role": "system", "content": system_prompt}]
@@ -1036,7 +1136,8 @@ class Agent:
             "rejected_candidates": self.rejected_candidates,
             "pricebuddy_submission": self.submission,
             "candidates": [{"url": c.url, "title": c.title, "price": c.price,
-                            "original_price": c.original_price, "image_url": c.image_url}
+                            "original_price": c.original_price, "image_url": c.image_url,
+                            "rating": c.rating, "sales_count": c.sales_count}
                            for c in self.created_candidates],
             "sources": self.sources,
             "sources_exhausted": len(self.sources) == len(self.starting_urls)
@@ -1050,10 +1151,10 @@ class Agent:
         return json.loads(config.redact_secrets(json.dumps(report, ensure_ascii=False)))
 
     def _validate_candidate(self, candidate: ProductCandidate) -> tuple[bool, str]:
-        return _candidate_meets_minimum_discount(
-            candidate,
-            self.min_discount_percentage,
-        )
+        valid, reason = _candidate_meets_minimum_discount(candidate, self.min_discount_percentage)
+        if not valid:
+            return valid, reason
+        return _candidate_meets_quality_bar(candidate, self.min_rating, self.min_sales)
 
     def _redact_arguments(self, args: dict[str, Any]) -> dict[str, Any]:
         """Redact sensitive values from tool arguments for logging."""
@@ -1117,6 +1218,18 @@ def main() -> int:
         default=config.HERMES_MIN_DISCOUNT_PERCENTAGE,
         help="Minimum discount percentage to accept a candidate.",
     )
+    parser.add_argument(
+        "--min-rating",
+        type=float,
+        default=config.HERMES_MIN_RATING,
+        help="Minimum visible rating (0-5) to accept a candidate; 0 disables the check.",
+    )
+    parser.add_argument(
+        "--min-sales",
+        type=int,
+        default=config.HERMES_MIN_SALES,
+        help="Minimum visible historical sales to accept a candidate; 0 disables the check.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1136,6 +1249,8 @@ def main() -> int:
         starting_urls=args.starting_urls,
         min_products=args.min_products,
         min_discount_percentage=args.min_discount_percentage,
+        min_rating=args.min_rating,
+        min_sales=args.min_sales,
         store_id=config.HERMES_STORE_ID,
         allowed_hosts=getattr(config, "ALLOWED_HOSTS", ""),
     )

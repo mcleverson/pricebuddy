@@ -29,6 +29,8 @@ PRICEBUDDY_API_BASE_URL = os.environ.get("PRICEBUDDY_API_BASE_URL", "")
 PRICEBUDDY_API_TOKEN = os.environ.get("PRICEBUDDY_API_TOKEN", "")
 HERMES_STORE_ID = int(os.environ.get("HERMES_STORE_ID", "1"))
 HERMES_MIN_DISCOUNT_PERCENTAGE = float(os.environ.get("HERMES_MIN_DISCOUNT_PERCENTAGE", "20.0"))
+HERMES_MIN_RATING = float(os.environ.get("HERMES_MIN_RATING", "0"))
+HERMES_MIN_SALES = int(os.environ.get("HERMES_MIN_SALES", "0"))
 
 
 def redact_secrets(text: str) -> str:

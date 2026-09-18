@@ -41,6 +41,15 @@ return [
 
     'hermes' => [
         'url' => env('HERMES_URL', 'http://hermes:8000'),
+        // Must exceed HERMES_RUN_TIMEOUT_SECONDS (the agent's own self-imposed
+        // deadline, see hermes/src/config.py): Hermes always stops itself and
+        // replies within that budget, but if this timeout matches it exactly,
+        // whichever clock fires first wins the race — the client gives up on
+        // the exact same tick Hermes tries to write its response, breaking
+        // the pipe and making the run look failed even though it finished.
+        // The margin below covers report generation + the final candidate
+        // ingest call, which happen after the agent's own deadline.
+        'timeout' => (int) env('HERMES_RUN_TIMEOUT_SECONDS', 600) + 120,
     ],
 
     'pricebuddy' => [

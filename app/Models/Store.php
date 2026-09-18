@@ -67,6 +67,8 @@ class Store extends Model
         'agent_max_products',
         'agent_min_discount_percentage',
         'discovery_min_percentage_per_tag',
+        'discovery_min_sales',
+        'discovery_min_rating',
     ];
 
     protected function casts(): array
@@ -80,6 +82,8 @@ class Store extends Model
             'agent_max_products' => 'integer',
             'agent_min_discount_percentage' => 'decimal:2',
             'discovery_min_percentage_per_tag' => 'integer',
+            'discovery_min_sales' => 'integer',
+            'discovery_min_rating' => 'decimal:2',
         ];
     }
 

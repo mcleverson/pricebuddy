@@ -64,6 +64,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             agent_options = {}
         min_products = body.get("min_products", config.MIN_PRODUCTS)
         min_discount_percentage = body.get("min_discount_percentage", config.HERMES_MIN_DISCOUNT_PERCENTAGE)
+        min_rating = body.get("min_rating", config.HERMES_MIN_RATING)
+        min_sales = body.get("min_sales", config.HERMES_MIN_SALES)
         store_id = body.get("store_id") or body.get("storeId")
 
         if not goal or not marketplace:
@@ -80,6 +82,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("min_products must be at least 1")
             if min_discount_percentage is not None:
                 min_discount_percentage = float(min_discount_percentage)
+            if min_rating is not None:
+                min_rating = float(min_rating)
+            if min_sales is not None:
+                min_sales = int(min_sales)
             if store_id is not None:
                 store_id = int(store_id)
         except (ValueError, TypeError) as exc:
@@ -101,6 +107,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 store_id=store_id,
                 min_products=min_products,
                 min_discount_percentage=min_discount_percentage,
+                min_rating=min_rating,
+                min_sales=min_sales,
                 browser_options=agent_options,
             )
             report = agent.run()

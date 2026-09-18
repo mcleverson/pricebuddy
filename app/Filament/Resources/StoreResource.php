@@ -290,6 +290,27 @@ class StoreResource extends Resource
                 ->default(20)
                 ->suffix('%')
                 ->required($isRequired),
+
+            // Quality floor, on top of the discount floor above. Api providers
+            // (e.g. Shopee) read these straight from the marketplace's own
+            // sales/rating fields; Hermes has the LLM report the same signals
+            // when visibly shown on the page, so both paths honor it.
+            TextInput::make('discovery_min_sales')
+                ->label('Minimum sales (historical)')
+                ->helperText('Skip candidates with fewer historical sales than this. Filters out unproven/low-appeal listings. 0 = no minimum.')
+                ->numeric()
+                ->integer()
+                ->minValue(0)
+                ->default(0),
+
+            TextInput::make('discovery_min_rating')
+                ->label('Minimum rating')
+                ->helperText('Skip candidates — and, when fanning out by shop, shops — rated below this (0-5 scale). Filters out unqualified sellers. 0 = no minimum.')
+                ->numeric()
+                ->minValue(0)
+                ->maxValue(5)
+                ->step(0.1)
+                ->default(0),
         ];
     }
 
