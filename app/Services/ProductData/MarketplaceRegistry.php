@@ -6,7 +6,12 @@ use App\Services\Scraping\MarketplaceStrategyResolver;
 
 class MarketplaceRegistry
 {
-    /** @var array<string, string> */
+    /**
+     * Display names for known marketplace ids. Ids without an entry here are
+     * still selectable and shown as-is.
+     *
+     * @var array<string, string>
+     */
     private const LABELS = [
         'amazon_br' => 'Amazon Brasil',
         'shopee_br' => 'Shopee Brasil',
@@ -39,9 +44,17 @@ class MarketplaceRegistry
         return self::ALIASES[$marketplaceId] ?? $marketplaceId;
     }
 
-    /** @return array<string, string> */
+    /**
+     * Marketplace ids only select an API provider, so the options are the
+     * providers registered in config/product_data.php — registering a new
+     * provider there is enough to make it selectable.
+     *
+     * @return array<string, string>
+     */
     public function options(): array
     {
-        return self::LABELS;
+        return collect(array_keys((array) config('product_data.providers', [])))
+            ->mapWithKeys(fn (string $id): array => [$id => self::LABELS[$id] ?? $id])
+            ->all();
     }
 }

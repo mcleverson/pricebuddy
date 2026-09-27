@@ -48,11 +48,36 @@ discovery, like Shopee) shows a **Discovery** card:
 | Visit URLs | *(Agentic only)* Ordered list of pages Hermes should start from. |
 | Minimum new products | Stop after this many new products are created. Existing products do not count. |
 | Minimum discount (%) | Apparent discount from visible current/original prices. |
+| Minimum sales (historical) | Skip candidates with fewer historical sales than this. 0 = no minimum. |
+| Minimum rating | Skip candidates (and, when an Api provider fans out by shop, shops) rated below this, on a 0-5 scale. 0 = no minimum. |
+| Minimum per niche (%) | *(Api only)* Guarantee at least this share of the target from each niche before filling the rest from any. 0 = no floor. |
 
 Agentic browses the Visit URLs with Hermes; Api queries the marketplace's own
 API once per niche instead — no starting URLs needed. Either way, matching
 products get added to your catalog. See the [main README](https://github.com/jez500/pricebuddy#discovery-agent-hermes)
 for how to run discovery from the CLI.
+
+### Agent browser (advanced)
+
+When **Collection mode** is **Agentic**, a collapsed **Agent browser
+(advanced)** card controls how Hermes browses this marketplace. Every field is
+optional: leave it blank to use the marketplace's built-in default. Values set
+here override that default for this store only.
+
+| Field | Purpose |
+| --- | --- |
+| Headless browser | **No** runs a real Chrome on a virtual display. Some marketplaces soft-block headless browsers. |
+| Native user agent | **Yes** keeps Chrome's own user agent instead of a spoofed desktop one. |
+| Stealth script | Injects the anti-automation-detection script. Some marketplaces block pages when it is present. |
+| Image from listing | **Yes** takes the product image (and keeps the price) from the listing page and skips opening the product page. Only has effect on marketplaces with listing image extraction (currently Mercado Livre). |
+| Require image | **Yes** discards candidates without an image instead of saving them incomplete. |
+| Page segment size (chars) | Page text sent to the LLM per step (minimum 1000). Smaller avoids LLM timeouts on dense pages. |
+| Max links per segment | Limits the links shown to the LLM per step on pages with many links. |
+| Ignore images containing | Image URLs containing any of these texts are never used as the product image (e.g. banner paths). Added to the built-in filters. |
+| Offer URL parameters | URL query parameters that identify a specific offer. When present, the listing price is kept instead of the product page price. Added to the built-in ones (`wid`, `deal_id`, `deal_print_id`). |
+
+Most stores can leave this card empty. Use it when a marketplace blocks the
+agent or returns wrong images/prices, so it can be tuned without a code change.
 
 ### Proxy
 

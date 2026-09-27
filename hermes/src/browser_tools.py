@@ -82,6 +82,8 @@ class BrowserToolSet:
         metadata_resolver: Callable[[str, str], dict[str, Any]] | None = None,
         target_candidates: int | None = None,
         required_urls: list[str] | None = None,
+        image_exclude_patterns: list[str] | None = None,
+        offer_query_params: list[str] | None = None,
     ) -> None:
         self.page = page
         self.guard = guard
@@ -89,6 +91,9 @@ class BrowserToolSet:
         self.metadata_resolver = metadata_resolver
         self.target_candidates = target_candidates
         self.required_urls = required_urls or []
+        # Store-configured extras, added on top of the built-in filters.
+        self.image_exclude_patterns = tuple(image_exclude_patterns or ())
+        self.offer_query_params = tuple(offer_query_params or ())
         self.page_count = 0
         self.candidates: list[ProductCandidate] = []
         self.visited_urls: set[str] = set()
@@ -355,7 +360,9 @@ class BrowserToolSet:
             """)
             # Prefer the first semantically exposed product image. Declarative
             # metadata may contain a banner or recommendation image.
-            accessible_product_image = self._select_accessible_image(accessible_images)
+            accessible_product_image = self._select_accessible_image(
+                accessible_images, excluded_patterns=self.image_exclude_patterns,
+            )
             if not accessible_product_image:
                 # Some marketplaces expose the main image with a small
                 # rendered box while its actual resource is still valid. Keep
@@ -363,12 +370,13 @@ class BrowserToolSet:
                 # threshold as a generic fallback.
                 accessible_product_image = self._select_accessible_image(
                     accessible_images, minimum_area=10_000,
+                    excluded_patterns=self.image_exclude_patterns,
                 )
             if accessible_product_image:
                 metadata["image"] = accessible_product_image
             else:
                 metadata["image"] = self._normalize_image_url(metadata.get("image"), raw.get("url"))
-                if not self._is_likely_product_image(metadata.get("image")):
+                if not self._is_likely_product_image(metadata.get("image"), self.image_exclude_patterns):
                     metadata["image"] = None
             logger.info(
                 "Product metadata image resolution: found=%s accessible=%d",
@@ -426,7 +434,7 @@ class BrowserToolSet:
         return normalized if normalized.startswith(("http://", "https://")) else None
 
     @staticmethod
-    def _is_offer_specific_url(url: str) -> bool:
+    def _is_offer_specific_url(url: str, extra_params: tuple[str, ...] = ()) -> bool:
         """Whether a URL identifies a particular offer inside a product page."""
         try:
             parsed = urlsplit(url)
@@ -439,12 +447,12 @@ class BrowserToolSet:
         # explicitly carries an offer/deal identity (e.g. Mercado Livre's
         # `wid` and `deal_print_id` parameters).
         return bool(
-            {"wid", "deal_id", "deal_print_id"}.intersection(query)
+            {"wid", "deal_id", "deal_print_id", *extra_params}.intersection(query)
             or "deal:" in parsed.query.lower()
         )
 
     @staticmethod
-    def _is_likely_product_image(src: str | None) -> bool:
+    def _is_likely_product_image(src: str | None, extra_patterns: tuple[str, ...] = ()) -> bool:
         """Reject known marketplace banners and non-product image paths."""
         src = BrowserToolSet._normalize_image_url(src)
         if not src:
@@ -453,6 +461,9 @@ class BrowserToolSet:
         lowered = src.lower()
         excluded_paths = ("/digital/video/", "/merch/", "/sprite", "/logo", "/icon")
         if any(path in lowered for path in excluded_paths):
+            return False
+
+        if any(pattern.lower() in lowered for pattern in extra_patterns):
             return False
 
         # Amazon's product gallery uses image paths; G/32 is commonly a
@@ -465,6 +476,7 @@ class BrowserToolSet:
     @staticmethod
     def _select_accessible_image(
         images: list[dict[str, Any]], minimum_area: float = 40_000,
+        excluded_patterns: tuple[str, ...] = (),
     ) -> str | None:
         """Select the first likely main product image from semantic image data."""
         excluded = re.compile(
@@ -480,7 +492,7 @@ class BrowserToolSet:
             if not isinstance(image, dict) or not image.get("visible"):
                 continue
             src = image.get("src")
-            if not BrowserToolSet._is_likely_product_image(src):
+            if not BrowserToolSet._is_likely_product_image(src, excluded_patterns):
                 continue
             if excluded.search(str(image.get("alt", ""))):
                 continue
@@ -608,7 +620,7 @@ class BrowserToolSet:
             if isinstance(image, dict):
                 image = image.get("url")
             image = self._normalize_image_url(image, raw.get("url"))
-            if self._is_likely_product_image(image):
+            if self._is_likely_product_image(image, self.image_exclude_patterns):
                 result["image"] = image
                 break
 
@@ -776,14 +788,14 @@ class BrowserToolSet:
                         # Prefere o preço declarativo da página do produto ao preço
                         # extraído da listagem, que o LLM pode ter lido errado.
                         metadata_price = data.get("price")
-                        if metadata_price and not self._is_offer_specific_url(candidate.url):
+                        if metadata_price and not self._is_offer_specific_url(candidate.url, self.offer_query_params):
                             candidate.price = str(metadata_price)
                         # Only override listing image if metadata provided a better one
                         new_image = data.get("image")
                         if new_image:
                             logger.info("Image found via metadata for %s: %s", candidate.url, new_image[:80])
                             candidate.image_url = new_image
-                        if data.get("original_price") and not self._is_offer_specific_url(candidate.url):
+                        if data.get("original_price") and not self._is_offer_specific_url(candidate.url, self.offer_query_params):
                             candidate.original_price = data["original_price"]
                         # Backfill only — the listing's own visible rating (if
                         # the LLM reported one) is at least as trustworthy as

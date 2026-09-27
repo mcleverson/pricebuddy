@@ -502,6 +502,8 @@ class Agent:
         if isinstance(max_segment_links, bool) or not isinstance(max_segment_links, int) or max_segment_links < 1:
             max_segment_links = None
         self.llm_max_links_per_segment = max_segment_links
+        self.image_exclude_patterns = self._string_list_option("image_exclude_patterns")
+        self.offer_query_params = self._string_list_option("offer_query_params")
 
         self.steps_log: list[dict[str, Any]] = []
         self.start_time = 0.0
@@ -512,6 +514,13 @@ class Agent:
         self.submission = {"success": 0, "existing": 0, "failed": 0}
         self.known_candidates = 0
         self.rejected_candidates = 0
+
+    def _string_list_option(self, key: str) -> list[str]:
+        """Read a list-of-strings browser option, ignoring invalid entries."""
+        value = self.browser_options.get(key)
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
     def remaining_seconds(self) -> float:
         return max(0, self.run_timeout_seconds - (time.time() - self.start_time))
@@ -562,7 +571,12 @@ class Agent:
                     time.monotonic() - browser_started,
                 )
                 try:
-                    tools = BrowserToolSet(page, BrowserGuard(self.allowed_hosts))
+                    tools = BrowserToolSet(
+                        page,
+                        BrowserGuard(self.allowed_hosts),
+                        image_exclude_patterns=self.image_exclude_patterns,
+                        offer_query_params=self.offer_query_params,
+                    )
                     # Separate product tab preserves listing pagination/scroll state during enrichment.
                     metadata_page = context.new_page()
                     metadata_page.set_default_navigation_timeout(30000)
@@ -571,6 +585,8 @@ class Agent:
                         BrowserGuard(self.allowed_hosts),
                         candidate_validator=self._validate_candidate,
                         metadata_resolver=self._resolve_product_metadata_with_llm,
+                        image_exclude_patterns=self.image_exclude_patterns,
+                        offer_query_params=self.offer_query_params,
                     )
                     logging.info("Discovery startup: listing and metadata pages ready")
                     pages = 0

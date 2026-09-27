@@ -119,6 +119,15 @@ class StoreResource extends Resource
                     ->columns(2)
                     ->visible(fn (Get $get): bool => in_array($get('access_mode'), [AccessMode::Agentic->value, AccessMode::Api->value], true)),
 
+                Section::make('Agent browser (advanced)')
+                    ->description('How Hermes browses this marketplace. Leave a field blank to use the marketplace default.')
+                    ->schema(self::agentBrowserFormFields())
+                    ->statePath('settings.agent_options')
+                    ->columns(2)
+                    ->collapsible()
+                    ->collapsed()
+                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value),
+
                 Forms\Components\Group::make([
                     Section::make('Title strategy')->schema([
                         Forms\Components\Group::make(self::makeStrategyInput('title', self::DEFAULT_SELECTORS['title'], required: self::isScrapingMode()))->columns(2),
@@ -360,6 +369,56 @@ class StoreResource extends Resource
                 ->suffix('%')
                 ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Api->value)
                 ->columnSpanFull(),
+        ];
+    }
+
+    /**
+     * Overrides for the Hermes browser options (see Store::AGENT_*_OPTIONS).
+     * Booleans are a Yes/No select rather than a Toggle so "blank" can mean
+     * "marketplace default" instead of always saving false.
+     *
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    protected static function agentBrowserFormFields(): array
+    {
+        $yesNo = fn (string $name, string $label, string $help): Select => Select::make($name)
+            ->label($label)
+            ->options(['1' => 'Yes', '0' => 'No'])
+            ->placeholder('Marketplace default')
+            ->hintIcon(Icons::Help->value, $help);
+
+        return [
+            $yesNo('headless', 'Headless browser', 'No runs a real Chrome on a virtual display. Some marketplaces soft-block headless browsers.'),
+            $yesNo('native_user_agent', 'Native user agent', 'Yes keeps Chrome\'s own user agent instead of a spoofed desktop one.'),
+            $yesNo('stealth_script', 'Stealth script', 'Injects the anti-automation-detection script. Some marketplaces block pages when it is present.'),
+            $yesNo('listing_image_enrichment', 'Image from listing', 'Yes takes the product image (and keeps the price) from the listing page and skips opening the product page. Only has effect on marketplaces with listing image extraction (currently Mercado Livre).'),
+            $yesNo('require_image', 'Require image', 'Yes discards candidates without an image instead of saving them incomplete.'),
+
+            TextInput::make('llm_page_segment_chars')
+                ->label('Page segment size (chars)')
+                ->hintIcon(Icons::Help->value, 'Page text sent to the LLM per step. Smaller avoids LLM timeouts on dense pages.')
+                ->numeric()
+                ->integer()
+                ->minValue(1000)
+                ->placeholder('Marketplace default'),
+
+            TextInput::make('llm_max_links_per_segment')
+                ->label('Max links per segment')
+                ->hintIcon(Icons::Help->value, 'Limits links shown to the LLM per step on pages with many links.')
+                ->numeric()
+                ->integer()
+                ->minValue(1)
+                ->placeholder('Marketplace default'),
+
+            Forms\Components\TagsInput::make('image_exclude_patterns')
+                ->label('Ignore images containing')
+                ->hintIcon(Icons::Help->value, 'Image URLs containing any of these texts are never used as the product image (e.g. banner paths). Added to the built-in filters.')
+                ->placeholder('e.g. /banner/'),
+
+            Forms\Components\TagsInput::make('offer_query_params')
+                ->label('Offer URL parameters')
+                ->hintIcon(Icons::Help->value, 'URL query parameters that identify a specific offer. When present, the listing price is kept instead of the product page price. Added to the built-in ones (wid, deal_id, deal_print_id).')
+                ->placeholder('e.g. wid'),
         ];
     }
 

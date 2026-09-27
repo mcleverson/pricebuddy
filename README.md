@@ -115,6 +115,11 @@ That section defines:
 | Visit URLs | Ordered list of pages the agent should start from. |
 | Minimum new products | Minimum number of new products confirmed created for the token owner. Existing products and failed insertions do not count; the current page is finished before stopping. |
 | Minimum discount (%) | Apparent discount from visible current/original prices. Real deal classification belongs to PriceBuddy. |
+| Minimum sales (historical) | Skip candidates with fewer historical sales than this. Hermes uses the count visible on the page; Api providers use the marketplace's own data. 0 = no minimum. |
+| Minimum rating | Skip candidates rated below this (0-5 scale), from the same sources as sales. 0 = no minimum. |
+| Minimum per niche (%) | *(Api only)* Guarantee at least this share of the target from each niche before filling the rest from any. 0 = no floor. |
+
+How Hermes browses each marketplace (headless or real Chrome, user agent, stealth script, LLM page segment size, image and offer URL filters) can be tuned per store in the collapsed **Agent browser (advanced)** card. Blank fields use the marketplace's built-in defaults. See [Stores → Agent browser](docs/docs/stores.md#agent-browser-advanced) for every field.
 
 Run a store through Docker Compose:
 

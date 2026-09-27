@@ -135,6 +135,37 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             && $provider->supports($store, ProductDataOperation::Discovery);
     }
 
+    /**
+     * Hermes browser options the Store overrides, typed the way Hermes expects
+     * (it checks `is True` and int types). Blank fields mean "use the
+     * marketplace default" and are dropped.
+     *
+     * @return array<string, bool|int|list<string>>
+     */
+    protected function storeAgentOptions(Store $store): array
+    {
+        $options = [];
+
+        foreach ((array) data_get($store->settings, 'agent_options', []) as $key => $value) {
+            if ($value === null || $value === '' || $value === []) {
+                continue;
+            }
+
+            $typed = match (true) {
+                in_array($key, Store::AGENT_BOOLEAN_OPTIONS, true) => filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
+                in_array($key, Store::AGENT_INTEGER_OPTIONS, true) => filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null,
+                in_array($key, Store::AGENT_LIST_OPTIONS, true) => array_values(array_filter(array_map('trim', array_filter((array) $value, 'is_string')), fn (string $item): bool => $item !== '')) ?: null,
+                default => null,
+            };
+
+            if ($typed !== null) {
+                $options[$key] = $typed;
+            }
+        }
+
+        return $options;
+    }
+
     protected function runAgenticDiscovery(
         Store $store,
         MarketplaceStrategyResolver $marketplaceStrategies,
@@ -164,7 +195,12 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             // Cast to object so an empty array (no marketplace-specific options)
             // still serializes as a JSON object `{}` rather than `[]` — Hermes
             // requires agent_options to be an object.
-            'agent_options' => (object) $marketplaceStrategy->agentOptions($urls->first()),
+            // Store overrides (set on the Store screen) win over the marketplace
+            // strategy defaults, the same precedence ScrapingGateway uses.
+            'agent_options' => (object) array_replace(
+                $marketplaceStrategy->agentOptions($urls->first()),
+                $this->storeAgentOptions($store),
+            ),
             'goal' => $goal,
             'urls' => $urls->values()->all(),
             'tags' => $store->tags->pluck('name')->values()->all(),

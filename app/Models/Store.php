@@ -52,6 +52,29 @@ class Store extends Model
 
     use HasSlug;
 
+    /**
+     * Hermes browser options a Store may override in settings.agent_options,
+     * grouped by the type Hermes expects. Unset keys fall back to the
+     * marketplace strategy's agentOptions().
+     */
+    public const array AGENT_BOOLEAN_OPTIONS = [
+        'headless',
+        'native_user_agent',
+        'stealth_script',
+        'listing_image_enrichment',
+        'require_image',
+    ];
+
+    public const array AGENT_INTEGER_OPTIONS = [
+        'llm_page_segment_chars',
+        'llm_max_links_per_segment',
+    ];
+
+    public const array AGENT_LIST_OPTIONS = [
+        'image_exclude_patterns',
+        'offer_query_params',
+    ];
+
     protected $fillable = [
         'name',
         'marketplace_id',
