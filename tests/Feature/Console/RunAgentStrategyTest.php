@@ -21,6 +21,8 @@ class RunAgentStrategyTest extends TestCase
 {
     use RefreshDatabase;
 
+    private ?ProductDataProvider $apiProvider = null;
+
     private function agenticStore(array $overrides = []): Store
     {
         return Store::factory()->create(array_merge([
@@ -167,15 +169,21 @@ class RunAgentStrategyTest extends TestCase
     }
 
     /**
-     * An Api store (like Shopee) whose provider returns the given candidates.
+     * An Api store (like Shopee) whose provider returns the given candidates on
+     * the first fetch and nothing on later rounds — or, with $rounds, one batch
+     * per round (like the real search-term rotation).
      *
      * @param  array<int, array<string, mixed>>  $candidates
+     * @param  array<int, array<int, array<string, mixed>>>|null  $rounds
      */
-    private function apiStoreReturning(array $candidates, array $overrides = []): Store
+    private function apiStoreReturning(array $candidates, array $overrides = [], ?array $rounds = null): Store
     {
-        $provider = new class($candidates) implements ProductDataProvider
+        $provider = new class($rounds ?? [$candidates]) implements ProductDataProvider
         {
-            public function __construct(private array $candidates) {}
+            /** @var list<array<string, mixed>> */
+            public array $fetchedTags = [];
+
+            public function __construct(private array $rounds) {}
 
             public function marketplaceId(): string
             {
@@ -194,7 +202,9 @@ class RunAgentStrategyTest extends TestCase
 
             public function fetch(Store $store, ProductDataOperation $operation, array $context): array
             {
-                return $this->candidates;
+                $this->fetchedTags[] = $context['tags'];
+
+                return array_shift($this->rounds) ?? [];
             }
 
             public static function credentialFields(): array
@@ -203,6 +213,7 @@ class RunAgentStrategyTest extends TestCase
             }
         };
         $this->app->instance(ApiProviderRegistry::class, new ApiProviderRegistry([$provider]));
+        $this->apiProvider = $provider;
         config(['services.pricebuddy.api_token' => 'test-token', 'services.pricebuddy.api_base_url' => 'http://app/api']);
 
         $store = Store::factory()->create(array_merge([
@@ -287,6 +298,44 @@ class RunAgentStrategyTest extends TestCase
         $saved = json_decode(Storage::disk('local')->get($reports[0]), true);
         $this->assertSame(['relevant' => 2, 'off_niche' => 1], $saved['report']['relevance']['decisions_by_classification']);
         $this->assertCount(3, $saved['report']['relevance']['decisions']);
+    }
+
+    public function test_api_discovery_runs_more_rounds_until_the_target_is_reached(): void
+    {
+        Storage::fake('local');
+        $store = $this->apiStoreReturning([], ['agent_max_products' => 3], rounds: [
+            [$this->apiCandidate('phone-1', 'Galaxy A15', 'Eletrônicos')],
+            [$this->apiCandidate('phone-2', 'Galaxy A25', 'Eletrônicos'), $this->apiCandidate('phone-3', 'Galaxy A35', 'Eletrônicos')],
+            [$this->apiCandidate('phone-4', 'never fetched', 'Eletrônicos')],
+        ]);
+        Tag::query()->update(['relevance_profile' => null]);
+        $this->fakeDiscoveryEndpoints([], []);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
+
+        $this->assertCount(3, $this->ingestedCandidates());
+        $this->assertCount(2, $this->apiProvider->fetchedTags);
+        $saved = json_decode(Storage::disk('local')->get(Storage::disk('local')->allFiles('hermes/reports')[0]), true);
+        $this->assertSame([1, 2], array_column($saved['report']['rounds'], 'created'));
+    }
+
+    public function test_api_discovery_rounds_keep_room_for_a_niche_below_its_floor(): void
+    {
+        Storage::fake('local');
+        $beauty = array_map(fn (int $i) => $this->apiCandidate("beauty-{$i}", "Perfume {$i}", 'Beleza'), range(1, 6));
+        $store = $this->apiStoreReturning([], ['agent_max_products' => 4, 'discovery_min_percentage_per_tag' => 50], rounds: [
+            [...$beauty, $this->apiCandidate('phone-1', 'Galaxy A15', 'Eletrônicos')],
+            [$this->apiCandidate('phone-2', 'Galaxy A25', 'Eletrônicos')],
+        ]);
+        Tag::query()->update(['relevance_profile' => null]);
+        $this->fakeDiscoveryEndpoints([], []);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
+
+        $ingested = collect($this->ingestedCandidates())->groupBy(fn (array $c) => $c['tags'][0])->map->count()->all();
+        $this->assertSame(['Beleza' => 2, 'Eletrônicos' => 2], $ingested);
+        // Round 2 searched only the niche still below its floor.
+        $this->assertSame(['Eletrônicos'], $this->apiProvider->fetchedTags[1]);
     }
 
     public function test_api_discovery_without_profile_does_not_call_the_evaluator(): void

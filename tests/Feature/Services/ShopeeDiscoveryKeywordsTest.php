@@ -9,7 +9,6 @@ use App\Models\Tag;
 use App\Services\ProductData\Providers\ShopeeProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -78,7 +77,6 @@ class ShopeeDiscoveryKeywordsTest extends TestCase
 
     public function test_profile_terms_are_searched_and_rotate_across_runs(): void
     {
-        Cache::flush();
         $store = $this->store(['Eletrônicos' => [
             'include_product_types' => ['Smart TVs', 'Notebooks', ' '],
             'include_products' => ['Fone Bluetooth', 'smart tvs', 'Soundbar'],
@@ -90,12 +88,16 @@ class ShopeeDiscoveryKeywordsTest extends TestCase
         $this->assertSame(['Smart TVs', 'Notebooks', 'Fone Bluetooth'], $first['products']);
         $this->assertSame(['Smart TVs'], $first['shops']);
         $this->assertSame(['Soundbar', 'Smart TVs', 'Notebooks'], $second['products']);
+
+        // Persisted on the store, so a cache clear (done on every app start) does not restart it.
+        \Illuminate\Support\Facades\Cache::flush();
+        $third = $this->discover($store->fresh()->load('tags'));
+        $this->assertSame(['Fone Bluetooth', 'Soundbar', 'Smart TVs'], $third['products']);
         $this->assertSame(['Eletrônicos'], $first['results']->pluck('tags')->flatten()->unique()->values()->all());
     }
 
     public function test_each_niche_uses_its_own_terms(): void
     {
-        Cache::flush();
         $searched = $this->discover($this->store([
             'Beleza' => ['include_product_types' => ['Perfumes']],
             'Eletrônicos' => ['include_product_types' => ['Notebooks']],

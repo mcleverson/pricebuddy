@@ -11,7 +11,6 @@ use App\Services\ProductData\Providers\Shopee\ShopeeAffiliateClient;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Get;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * Shopee Affiliate Open API (GraphQL). Fields/params confirmed against
@@ -48,6 +47,10 @@ class ShopeeProvider extends ConfiguredProvider
     // Terms rotate across runs, so every term is eventually searched without
     // multiplying API calls on a single run.
     protected const DISCOVERY_KEYWORDS_PER_NICHE = 3;
+
+    // Products requested per search term (the API's page maximum). Relevance
+    // filtering downstream picks the good ones, so a wider net pays off.
+    protected const DISCOVERY_PRODUCTS_PER_KEYWORD = 50;
 
     protected const PRODUCT_OFFER_FIELDS = <<<'GRAPHQL'
         nodes {
@@ -179,15 +182,13 @@ class ShopeeProvider extends ConfiguredProvider
         $minSales = (float) ($context['min_sales'] ?? 0);
         $minRating = (float) ($context['min_rating'] ?? 0);
         $client = $this->client($store);
-        $limit = min(50, max(10, (int) ($context['target_candidates'] ?? 20)));
         $results = collect();
 
         foreach ($tags as $tag) {
             $keywords = $this->discoveryKeywords($store, $tag);
-            $perKeyword = max(10, (int) ceil($limit / count($keywords)));
 
             foreach ($keywords as $keyword) {
-                $results = $results->merge($this->productsByKeyword($client, $store, $keyword, $tag, $perKeyword, $minDiscountPercentage, $minSales, $minRating));
+                $results = $results->merge($this->productsByKeyword($client, $store, $keyword, $tag, self::DISCOVERY_PRODUCTS_PER_KEYWORD, $minDiscountPercentage, $minSales, $minRating));
             }
 
             foreach ($this->shopsByKeyword($client, $keywords[0]) as $shop) {
@@ -238,10 +239,14 @@ class ShopeeProvider extends ConfiguredProvider
             return [$tag];
         }
 
-        $cacheKey = 'shopee:discovery-keyword-offset:'.$store->getKey().':'.md5($tag);
-        $offset = (int) Cache::get($cacheKey, 0) % $terms->count();
+        // The rotation position is kept on the store itself: the app cache is
+        // cleared on every container start, which would restart the rotation.
+        $settings = (array) $store->settings;
+        $offset = (int) ($settings['discovery_keyword_offsets'][$tag] ?? 0) % $terms->count();
         $count = min(self::DISCOVERY_KEYWORDS_PER_NICHE, $terms->count());
-        Cache::forever($cacheKey, ($offset + $count) % $terms->count());
+        $settings['discovery_keyword_offsets'][$tag] = ($offset + $count) % $terms->count();
+        $store->settings = $settings;
+        $store->saveQuietly();
 
         return array_map(fn (int $i): string => $terms[($offset + $i) % $terms->count()], range(0, $count - 1));
     }

@@ -23,6 +23,9 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
 {
     const COMMAND = 'buddy:agent-strategy-run';
 
+    /** Upper bound of fetch → evaluate → ingest rounds for Api discovery. */
+    const API_DISCOVERY_MAX_ROUNDS = 3;
+
     /**
      * The name and signature of the console command.
      */
@@ -359,38 +362,72 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             return ['success' => true, 'store' => $store, 'report' => ['status' => 'dry-run']];
         }
 
-        try {
-            $candidates = $provider->fetch($store, ProductDataOperation::Discovery, [
-                'tags' => $tags->all(),
-                'min_discount_percentage' => (float) $store->agent_min_discount_percentage,
-                'min_sales' => (float) $store->discovery_min_sales,
-                'min_rating' => (float) $store->discovery_min_rating,
-                'target_candidates' => $target,
-            ]);
-        } catch (\Throwable $exception) {
-            $this->error("Store [{$store->name}] failed: {$exception->getMessage()}");
-
-            return ['success' => false, 'store' => $store, 'report' => []];
-        }
-
-        $candidates = collect($candidates);
-        $relevance = null;
+        $minPercentagePerTag = (int) $store->discovery_min_percentage_per_tag;
+        $floorPerTag = $minPercentagePerTag > 0 ? (int) ceil($target * $minPercentagePerTag / 100) : 0;
         $relevanceProfile = $this->relevanceProfile($store);
-        if ($relevanceProfile !== null) {
-            [$candidates, $relevance] = $this->filterByRelevance($candidates, $tags, $relevanceProfile);
-        }
+        $created = 0;
+        $createdPerTag = array_fill_keys($tags->all(), 0);
+        $rounds = [];
+        $relevance = null;
 
-        $created = $this->ingestWithNicheFloor(
-            $candidates,
-            $tags,
-            $target,
-            (int) $store->discovery_min_percentage_per_tag,
-        );
+        // Each fetch searches the next terms of every niche's rotation, so when
+        // a round falls short of the target (or of a niche's floor), another
+        // round looks further instead of ending the run early. Bounded to keep
+        // API and LLM usage predictable.
+        for ($round = 1; $round <= self::API_DISCOVERY_MAX_ROUNDS && $created < $target; $round++) {
+            $pendingTags = $tags->filter(fn (string $tag): bool => $createdPerTag[$tag] < $floorPerTag)->values();
+            // Middle rounds focus on niches below their floor; the last round
+            // searches every niche so any of them can fill the remaining target.
+            $roundTags = $round > 1 && $round < self::API_DISCOVERY_MAX_ROUNDS && $pendingTags->isNotEmpty()
+                ? $pendingTags
+                : $tags;
+
+            try {
+                $candidates = collect($provider->fetch($store, ProductDataOperation::Discovery, [
+                    'tags' => $roundTags->all(),
+                    'min_discount_percentage' => (float) $store->agent_min_discount_percentage,
+                    'min_sales' => (float) $store->discovery_min_sales,
+                    'min_rating' => (float) $store->discovery_min_rating,
+                    'target_candidates' => $target,
+                ]));
+            } catch (\Throwable $exception) {
+                if ($round === 1) {
+                    $this->error("Store [{$store->name}] failed: {$exception->getMessage()}");
+
+                    return ['success' => false, 'store' => $store, 'report' => []];
+                }
+
+                $this->warn("Store [{$store->name}] round {$round} failed, keeping earlier rounds: {$exception->getMessage()}");
+                break;
+            }
+
+            $roundRelevance = null;
+            if ($relevanceProfile !== null) {
+                [$candidates, $roundRelevance] = $this->filterByRelevance($candidates, $tags, $relevanceProfile);
+                $relevance = $this->mergeRelevanceReports($relevance, $roundRelevance, $round);
+            }
+
+            $before = $created;
+            $created = $this->ingestWithNicheFloor(
+                $candidates,
+                $tags,
+                $target,
+                $minPercentagePerTag,
+                $createdPerTag,
+                $created,
+                // Keep room for niches still below their floor until the last round.
+                reserveFloors: $round < self::API_DISCOVERY_MAX_ROUNDS,
+            );
+            $rounds[] = ['round' => $round, 'tags' => $roundTags->all(), 'created' => $created - $before];
+            $this->line("Round {$round} ({$roundTags->implode(', ')}): created ".($created - $before).", total {$created}/{$target}.");
+        }
 
         $report = [
             'status' => $created >= $target ? 'completed' : 'incomplete',
             'total_candidates' => $created,
             'min_products' => $target,
+            'created_per_niche' => $createdPerTag,
+            'rounds' => $rounds,
         ];
 
         if ($relevance !== null) {
@@ -514,14 +551,29 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         ]];
     }
 
-    protected function ingestWithNicheFloor(Collection $candidates, Collection $tags, int $target, int $minPercentagePerTag): int
-    {
+    /**
+     * @param  array<array-key, int>  $createdPerTag  running per-niche count, updated in place across rounds
+     * @param  int  $alreadyCreated  products created by earlier rounds
+     * @param  bool  $reserveFloors  leave room for niches still below their floor
+     *                               (a later round may still find them)
+     * @return int total created, including earlier rounds
+     */
+    protected function ingestWithNicheFloor(
+        Collection $candidates,
+        Collection $tags,
+        int $target,
+        int $minPercentagePerTag,
+        array &$createdPerTag = [],
+        int $alreadyCreated = 0,
+        bool $reserveFloors = false,
+    ): int {
         $byTag = $candidates->groupBy(fn (array $candidate) => data_get($candidate, 'tags.0'));
         $floorPerTag = $minPercentagePerTag > 0 ? (int) ceil($target * $minPercentagePerTag / 100) : 0;
-        $created = 0;
+        $created = $alreadyCreated;
         $attempted = [];
+        $createdPerTag += array_fill_keys($tags->all(), 0);
 
-        $ingest = function (array $candidate) use (&$created, &$attempted): bool {
+        $ingest = function (array $candidate) use (&$created, &$attempted, &$createdPerTag): bool {
             $key = (string) ($candidate['url'] ?? '');
 
             if ($key === '' || isset($attempted[$key])) {
@@ -532,6 +584,10 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
 
             if ($this->ingestCandidate($candidate)) {
                 $created++;
+                $tag = data_get($candidate, 'tags.0');
+                if (is_string($tag) && array_key_exists($tag, $createdPerTag)) {
+                    $createdPerTag[$tag]++;
+                }
 
                 return true;
             }
@@ -546,7 +602,6 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             // small target), the first tags would consume the whole target and the
             // last ones would get nothing, defeating the point of a floor.
             $queues = $tags->mapWithKeys(fn (string $tag) => [$tag => $byTag->get($tag, collect())->values()])->all();
-            $createdPerTag = array_fill_keys($tags->all(), 0);
 
             $madeProgress = true;
             while ($madeProgress && $created < $target) {
@@ -561,7 +616,6 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
                         $candidate = $queues[$tag]->shift();
 
                         if ($ingest($candidate)) {
-                            $createdPerTag[$tag]++;
                             $madeProgress = true;
                             break;
                         }
@@ -570,15 +624,50 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             }
         }
 
+        $reserved = $reserveFloors
+            ? array_sum(array_map(fn (int $count): int => max(0, $floorPerTag - $count), $createdPerTag))
+            : 0;
+
         foreach ($candidates as $candidate) {
-            if ($created >= $target) {
+            if ($created >= $target - $reserved) {
                 break;
             }
 
-            $ingest($candidate);
+            $tag = data_get($candidate, 'tags.0');
+            $wasBelowFloor = is_string($tag) && ($createdPerTag[$tag] ?? $floorPerTag) < $floorPerTag;
+            if ($ingest($candidate) && $wasBelowFloor) {
+                // A product for a niche below its floor fills part of the reservation.
+                $reserved--;
+            }
         }
 
         return $created;
+    }
+
+    /**
+     * Accumulate per-round relevance reports into one run report.
+     *
+     * @param  array<string, mixed>|null  $report
+     * @param  array<string, mixed>  $round
+     * @return array<string, mixed>
+     */
+    protected function mergeRelevanceReports(?array $report, array $round, int $number): array
+    {
+        $decisions = array_map(fn (array $decision): array => [...$decision, 'round' => $number], (array) ($round['decisions'] ?? []));
+
+        if ($report === null) {
+            return [...$round, 'decisions' => $decisions];
+        }
+
+        foreach ((array) ($round['decisions_by_classification'] ?? []) as $classification => $count) {
+            $report['decisions_by_classification'][$classification] = ($report['decisions_by_classification'][$classification] ?? 0) + $count;
+        }
+        $report['decisions'] = [...(array) ($report['decisions'] ?? []), ...$decisions];
+        if (isset($round['error'])) {
+            $report['errors'][] = "round {$number}: {$round['error']}";
+        }
+
+        return $report;
     }
 
     /**
