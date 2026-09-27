@@ -10,6 +10,28 @@ that you have added to your account.
 
 You can add new tags via the tags page or when adding a product.
 
+## Relevance profile (discovery)
+
+A tag used as a store's discovery niche can carry a **Relevance profile**, which
+tells the Hermes agent which products truly belong to that niche. It is not a
+strict whitelist: the agent also admits new products semantically related to
+what is described.
+
+| Field | Purpose |
+| --- | --- |
+| Desired product types | e.g. smartphone, air fryer. |
+| Priority brands | Preferred brands. Other brands are still accepted when relevant. |
+| Relevant products / families / models | e.g. Galaxy S, iPhone. |
+| Synonyms and term variations | e.g. celular, telefone. |
+| Allowed categories | Marketplace categories that fit the niche. |
+| Excluded product types / brands | Never admitted. |
+| Excluded terms | Titles containing any of these whole words are rejected before the LLM is asked. |
+| Examples of desired / undesired products | Titles that illustrate what to admit or reject. |
+
+Only the profiles of a store's own niches are sent to the agent. When neither
+the store nor any of its niches has a profile, discovery is not filtered. See
+[Stores → Relevance](./stores.md#relevance) for the strategy-level rules.
+
 ## Filtering by tag
 
 There is a tag filter on the product listing page, you can add one or more tags

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Enums\AccessMode;
 use App\Enums\ProductDataOperation;
 use App\Models\Store;
+use App\Models\Tag;
 use App\Services\ProductData\ApiProviderRegistry;
 use App\Services\ProductData\MarketplaceRegistry;
 use App\Services\Scraping\MarketplaceStrategyResolver;
@@ -166,6 +167,63 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         return $options;
     }
 
+    /**
+     * Objects so empty sections still serialize as `{}` for Hermes.
+     *
+     * @return array{strategy: object, niches: object}|null
+     */
+    protected function relevanceProfile(Store $store): ?array
+    {
+        $strategy = $this->cleanProfile((array) $store->discovery_profile);
+        $niches = [];
+
+        /** @var Tag $tag */
+        foreach ($store->tags as $tag) {
+            $profile = $this->cleanProfile((array) $tag->relevance_profile);
+            if ($profile !== []) {
+                $niches[$tag->name] = $profile;
+            }
+        }
+
+        if ($strategy === [] && $niches === []) {
+            return null;
+        }
+
+        return ['strategy' => (object) $strategy, 'niches' => (object) $niches];
+    }
+
+    /**
+     * Drop blank values and trim strings so Hermes receives only meaningful rules.
+     *
+     * @param  array<string, mixed>  $profile
+     * @return array<string, mixed>
+     */
+    protected function cleanProfile(array $profile): array
+    {
+        $clean = [];
+
+        foreach ($profile as $key => $value) {
+            if (is_array($value)) {
+                $value = array_values(array_filter(
+                    array_map('trim', array_filter($value, 'is_string')),
+                    fn (string $item): bool => $item !== '',
+                ));
+            } elseif (is_string($value)) {
+                $value = trim($value);
+            }
+
+            if (in_array($key, ['min_price', 'max_price'], true)) {
+                $value = is_numeric($value) && (float) $value > 0 ? (float) $value : null;
+            }
+
+            if ($value !== null && $value !== '' && $value !== []) {
+                $clean[$key] = $value;
+            }
+        }
+
+        return $clean;
+    }
+
     protected function runAgenticDiscovery(
         Store $store,
         MarketplaceStrategyResolver $marketplaceStrategies,
@@ -211,6 +269,14 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             'min_rating' => (float) $store->discovery_min_rating,
             'min_sales' => (int) $store->discovery_min_sales,
         ];
+
+        // Only this store's own profile and its niches' profiles — never a
+        // global catalog. Omitted entirely when nothing is configured, so
+        // Hermes keeps today's unfiltered behavior for those stores.
+        $relevanceProfile = $this->relevanceProfile($store);
+        if ($relevanceProfile !== null) {
+            $payload['relevance_profile'] = $relevanceProfile;
+        }
 
         if ($this->option('dry-run')) {
             $this->info('Hermes payload:');

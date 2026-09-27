@@ -51,6 +51,9 @@ class ProductCandidate:
     label (loja oficial, vendido pela {marketplace}, MercadoLíder
     Platinum/Gold, etc). Listing-only, and null (not False) when no such
     label is visible — the LLM is instructed never to infer this."""
+    relevance: dict[str, Any] | None = None
+    """Admission decision from the strategy's relevance profile, when one is
+    configured (see relevance.py). Kept for the run report / debugging."""
 
 
 @dataclass

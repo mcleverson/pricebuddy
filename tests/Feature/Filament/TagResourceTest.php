@@ -106,6 +106,28 @@ class TagResourceTest extends TestCase
         $this->assertSame(20, $tag->weight);
     }
 
+    public function test_can_save_relevance_profile()
+    {
+        $this->actingAs($this->user);
+        $tag = Tag::factory()->create(['user_id' => $this->user->id]);
+
+        Livewire::test(TagResource\Pages\EditTag::class, ['record' => $tag->getRouteKey()])
+            ->fillForm([
+                'relevance_profile.include_product_types' => ['smartphone'],
+                'relevance_profile.include_brands' => ['Samsung', 'Apple'],
+                'relevance_profile.exclude_terms' => ['capa', 'película'],
+                'relevance_profile.negative_examples' => ['Capa de silicone para Galaxy S24'],
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $profile = $tag->refresh()->relevance_profile;
+        $this->assertSame(['smartphone'], $profile['include_product_types']);
+        $this->assertSame(['Samsung', 'Apple'], $profile['include_brands']);
+        $this->assertSame(['capa', 'película'], $profile['exclude_terms']);
+        $this->assertSame(['Capa de silicone para Galaxy S24'], $profile['negative_examples']);
+    }
+
     public function test_can_delete_tag()
     {
         $this->actingAs($this->user);

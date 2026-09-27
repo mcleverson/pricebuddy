@@ -62,6 +62,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         agent_options = body.get("agent_options", {})
         if agent_options is None:
             agent_options = {}
+        relevance_profile = body.get("relevance_profile")
         min_products = body.get("min_products", config.MIN_PRODUCTS)
         min_discount_percentage = body.get("min_discount_percentage", config.HERMES_MIN_DISCOUNT_PERCENTAGE)
         min_rating = body.get("min_rating", config.HERMES_MIN_RATING)
@@ -74,6 +75,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if not isinstance(agent_options, dict):
             self._send_json(400, {"status": "error", "error": "agent_options must be an object"})
+            return
+
+        if relevance_profile is not None and not isinstance(relevance_profile, dict):
+            self._send_json(400, {"status": "error", "error": "relevance_profile must be an object"})
             return
 
         try:
@@ -110,6 +115,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 min_rating=min_rating,
                 min_sales=min_sales,
                 browser_options=agent_options,
+                relevance_profile=relevance_profile,
             )
             report = agent.run()
         except Exception as exc:  # noqa: BLE001 - we want to return error to caller

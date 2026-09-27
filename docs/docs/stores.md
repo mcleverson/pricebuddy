@@ -57,6 +57,30 @@ API once per niche instead — no starting URLs needed. Either way, matching
 products get added to your catalog. See the [main README](https://github.com/jez500/pricebuddy#discovery-agent-hermes)
 for how to run discovery from the CLI.
 
+### Relevance
+
+When **Collection mode** is **Agentic**, a **Relevance** card holds the
+strategy's own rules for which discovered products to admit, on top of the
+[relevance profile](./tags.md#relevance-profile-discovery) of each of its niches.
+
+| Field | Purpose |
+| --- | --- |
+| Additional instructions | Free text with the strategy's intent, sent to the agent as-is. |
+| Always exclude | Accessories, parts and/or generic items are never admitted. |
+| Condition | **New only** rejects refurbished, used, open-box and similar items. |
+| Minimum / maximum price | Candidates outside the range are rejected before the LLM. |
+| Include / exclude fields | Same fields as a tag's relevance profile, applied to the whole strategy. |
+
+For each new candidate, Hermes first applies the deterministic rules (price
+range, excluded terms and brands, condition), then asks the LLM for an admission
+decision: `relevant`, `secondary`, `generic`, `accessory`, `excluded`,
+`ambiguous` or `off_niche`. Only `relevant` and `secondary` candidates are
+ingested; each decision and its reason is logged in the run report. This is
+admission only: scoring and ranking happen later in PriceBuddy.
+
+When neither the store nor its niches have a profile, discovery works exactly as
+before, with no extra LLM calls.
+
 ### Agent browser (advanced)
 
 When **Collection mode** is **Agentic**, a collapsed **Agent browser

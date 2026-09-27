@@ -23,6 +23,7 @@ import config
 from browser_guard import BrowserGuard
 from browser_tools import BrowserToolSet, ProductCandidate
 from llm_client import LLMClient, LLMClientError
+from relevance import RelevanceEvaluator, RelevanceProfile
 
 STEALTH_JS = r"""
 // Override navigator.webdriver
@@ -458,6 +459,7 @@ class Agent:
         store_id: int | None = None,
         allowed_hosts: str | list[str] | tuple[str, ...] | None = None,
         browser_options: dict[str, Any] | None = None,
+        relevance_profile: dict[str, Any] | None = None,
     ) -> None:
         self.marketplace = marketplace
         self.goal = goal
@@ -504,6 +506,13 @@ class Agent:
         self.llm_max_links_per_segment = max_segment_links
         self.image_exclude_patterns = self._string_list_option("image_exclude_patterns")
         self.offer_query_params = self._string_list_option("offer_query_params")
+        # Admission (not ranking) against this strategy's own niche profiles.
+        # Disabled when no profile is configured, preserving the previous flow.
+        self.relevance = RelevanceProfile(relevance_profile, self.tags)
+        self.relevance_evaluator = (
+            RelevanceEvaluator(self.llm_client, self.relevance) if self.relevance.enabled else None
+        )
+        self.relevance_stats: dict[str, int] = {}
 
         self.steps_log: list[dict[str, Any]] = []
         self.start_time = 0.0
@@ -993,6 +1002,7 @@ class Agent:
             [c.url for c in candidates], timeout=min(10, self.remaining_seconds()),
         )
         candidates_to_process = []
+        new_items: list[tuple[str, ProductCandidate]] = []
         backfills = 0
         new_count = 0
         for candidate, match in zip(candidates, matches):
@@ -1006,6 +1016,7 @@ class Agent:
                     backfills += 1
                 else:
                     new_count += 1
+                    new_items.append((match["key"], candidate))
             self.seen_keys.add(match["key"])
         self._record(
             "check_candidates",
@@ -1014,6 +1025,11 @@ class Agent:
             image_backfills=backfills,
             skipped=len(candidates) - len(candidates_to_process),
         )
+        if self.relevance_evaluator is not None and new_items and self._can_continue():
+            # Only new products are evaluated; image backfills of existing
+            # products were already admitted in an earlier run.
+            rejected = self._apply_relevance(new_items)
+            candidates_to_process = [c for c in candidates_to_process if id(c) not in rejected]
         # Preserve the LLM's ordering based only on visible demand/discount signals.
         for candidate in candidates_to_process:
             if not self._can_continue():
@@ -1151,9 +1167,14 @@ class Agent:
             "known_candidates_skipped": self.known_candidates,
             "rejected_candidates": self.rejected_candidates,
             "pricebuddy_submission": self.submission,
+            "relevance": {
+                "enabled": self.relevance.enabled,
+                "decisions_by_classification": self.relevance_stats,
+            },
             "candidates": [{"url": c.url, "title": c.title, "price": c.price,
                             "original_price": c.original_price, "image_url": c.image_url,
-                            "rating": c.rating, "sales_count": c.sales_count}
+                            "rating": c.rating, "sales_count": c.sales_count,
+                            "relevance": c.relevance}
                            for c in self.created_candidates],
             "sources": self.sources,
             "sources_exhausted": len(self.sources) == len(self.starting_urls)
@@ -1166,10 +1187,28 @@ class Agent:
             report["error"] = error
         return json.loads(config.redact_secrets(json.dumps(report, ensure_ascii=False)))
 
+    def _apply_relevance(self, items: list[tuple[str, ProductCandidate]]) -> set[int]:
+        """Record an admission decision per new candidate; return ids of the rejected ones."""
+        decisions = self.relevance_evaluator.evaluate(items, timeout_seconds=min(120, self.remaining_seconds()))
+        rejected: set[int] = set()
+        for (_, candidate), decision in zip(items, decisions):
+            candidate.relevance = decision.as_dict()
+            if candidate.tag is None and decision.niche in self.tags:
+                candidate.tag = decision.niche
+            self.relevance_stats[decision.classification] = self.relevance_stats.get(decision.classification, 0) + 1
+            self._record("relevance", url=candidate.url, title=(candidate.title or "")[:120], **decision.as_dict())
+            if not decision.ingest:
+                rejected.add(id(candidate))
+                self.rejected_candidates += 1
+        return rejected
+
     def _validate_candidate(self, candidate: ProductCandidate) -> tuple[bool, str]:
         valid, reason = _candidate_meets_minimum_discount(candidate, self.min_discount_percentage)
         if not valid:
             return valid, reason
+        price_reason = self.relevance.price_rejection(_parse_price(candidate.price))
+        if price_reason:
+            return False, price_reason
         return _candidate_meets_quality_bar(candidate, self.min_rating, self.min_sales)
 
     def _redact_arguments(self, args: dict[str, Any]) -> dict[str, Any]:

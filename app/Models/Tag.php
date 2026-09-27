@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\MorphToMany;
 /**
  * @property string $name
  * @property int $weight
+ * @property ?array $relevance_profile
  */
 class Tag extends Model
 {
@@ -24,6 +25,7 @@ class Tag extends Model
     {
         return [
             'weight' => 'integer',
+            'relevance_profile' => 'array',
         ];
     }
 

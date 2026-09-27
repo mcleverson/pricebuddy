@@ -78,6 +78,82 @@ class RunAgentStrategyTest extends TestCase
             ]);
     }
 
+    public function test_relevance_profile_is_omitted_when_nothing_is_configured(): void
+    {
+        Storage::fake('local');
+        $store = $this->agenticStore(['discovery_profile' => ['instructions' => ' ', 'include_brands' => []]]);
+        $store->tags()->attach(Tag::factory()->create(['relevance_profile' => ['exclude_terms' => ['']]]));
+        Http::fake(['*' => Http::response(['status' => 'completed', 'target_reached' => true], 200)]);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
+
+        Http::assertSent(fn ($request) => ! isset($request['relevance_profile']));
+    }
+
+    public function test_relevance_profile_contains_only_the_store_and_its_own_niches(): void
+    {
+        Storage::fake('local');
+        $store = $this->agenticStore(['discovery_profile' => [
+            'instructions' => ' Buscar smartphones. ',
+            'exclude_kinds' => ['accessories'],
+            'condition' => 'new',
+            'max_price' => '1500',
+            'min_price' => null,
+            'include_brands' => [' Samsung ', ''],
+        ]]);
+        $phones = Tag::factory()->create(['name' => 'Celulares', 'relevance_profile' => [
+            'include_product_types' => ['smartphone'],
+            'exclude_terms' => ['capa'],
+        ]]);
+        $home = Tag::factory()->create(['name' => 'Casa', 'relevance_profile' => null]);
+        Tag::factory()->create(['name' => 'Unrelated', 'relevance_profile' => ['include_product_types' => ['tv']]]);
+        $store->tags()->attach([$phones->id, $home->id]);
+        Http::fake(['*' => Http::response(['status' => 'completed', 'target_reached' => true], 200)]);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
+
+        Http::assertSent(fn ($request) => json_decode(json_encode($request['relevance_profile']), true) === [
+            'strategy' => [
+                'instructions' => 'Buscar smartphones.',
+                'exclude_kinds' => ['accessories'],
+                'condition' => 'new',
+                'max_price' => 1500, // float 1500.0 before the JSON round-trip
+                'include_brands' => ['Samsung'],
+            ],
+            'niches' => [
+                'Celulares' => ['include_product_types' => ['smartphone'], 'exclude_terms' => ['capa']],
+            ],
+        ]);
+    }
+
+    public function test_edit_form_saves_the_relevance_profile(): void
+    {
+        $user = User::factory()->create();
+        $this->actingAs($user);
+        $store = $this->agenticStore();
+        $store->tags()->attach(Tag::factory()->create(['user_id' => $user->id]));
+
+        Livewire::test(EditStore::class, ['record' => $store->getRouteKey()])
+            ->fillForm([
+                'discovery_profile.instructions' => 'Buscar smartphones.',
+                'discovery_profile.exclude_kinds' => ['accessories', 'parts'],
+                'discovery_profile.condition' => 'new',
+                'discovery_profile.max_price' => 1500,
+                'discovery_profile.include_brands' => ['Samsung', 'Apple'],
+                'settings.locale_settings.locale' => 'pt_BR',
+                'settings.locale_settings.currency' => 'BRL',
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $profile = $store->fresh()->discovery_profile;
+        $this->assertSame('Buscar smartphones.', $profile['instructions']);
+        $this->assertSame(['accessories', 'parts'], $profile['exclude_kinds']);
+        $this->assertSame('new', $profile['condition']);
+        $this->assertEquals(1500, $profile['max_price']);
+        $this->assertSame(['Samsung', 'Apple'], $profile['include_brands']);
+    }
+
     public function test_edit_form_preserves_and_updates_an_existing_minimum(): void
     {
         $user = User::factory()->create();

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Enums\Icons;
 use App\Filament\Resources\TagResource\Pages;
 use App\Models\Tag;
 use Filament\Forms;
@@ -44,7 +45,40 @@ class TagResource extends Resource
                             ->helperText(self::getWeightHelperText()),
                     ]),
 
+                Forms\Components\Section::make('Relevance profile')
+                    ->description(__('Guides discovery (Hermes) on which products truly belong to this niche. Not a strict whitelist: the agent also admits new products semantically related to what is described here. Leave empty to keep discovery unfiltered by niche.'))
+                    ->schema(self::relevanceProfileFields())
+                    ->statePath('relevance_profile')
+                    ->columns(2)
+                    ->collapsible(),
             ]);
+    }
+
+    /**
+     * Niche relevance fields, shared with the Store's discovery profile so a
+     * strategy can add to (or narrow) its niches with the same vocabulary.
+     *
+     * @return array<int, \Filament\Forms\Components\Component>
+     */
+    public static function relevanceProfileFields(): array
+    {
+        $list = fn (string $name, string $label, string $help): Forms\Components\TagsInput => Forms\Components\TagsInput::make($name)
+            ->label($label)
+            ->hintIcon(Icons::Help->value, $help)
+            ->splitKeys(['Enter', ',']);
+
+        return [
+            $list('include_product_types', 'Desired product types', 'e.g. smartphone, air fryer, robot vacuum.'),
+            $list('include_brands', 'Priority brands', 'Brands to prioritize. Other brands are still accepted when relevant.'),
+            $list('include_products', 'Relevant products / families / models', 'e.g. Galaxy S, iPhone, Redmi Note.'),
+            $list('include_terms', 'Synonyms and term variations', 'e.g. celular, telefone, smartphone.'),
+            $list('allowed_categories', 'Allowed categories', 'Marketplace categories that fit this niche.'),
+            $list('exclude_product_types', 'Excluded product types', 'e.g. case, screen protector, charger.'),
+            $list('exclude_brands', 'Excluded brands', 'Brands never admitted.'),
+            $list('exclude_terms', 'Excluded terms', 'Titles containing any of these words are rejected before the LLM (whole-word match).'),
+            $list('positive_examples', 'Examples of desired products', 'Product titles that illustrate what this niche wants.'),
+            $list('negative_examples', 'Examples of undesired products', 'Product titles that illustrate what to reject.'),
+        ];
     }
 
     public static function table(Table $table): Table

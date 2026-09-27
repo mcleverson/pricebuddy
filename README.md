@@ -119,6 +119,8 @@ That section defines:
 | Minimum rating | Skip candidates rated below this (0-5 scale), from the same sources as sales. 0 = no minimum. |
 | Minimum per niche (%) | *(Api only)* Guarantee at least this share of the target from each niche before filling the rest from any. 0 = no floor. |
 
+To keep generic items, accessories and loosely related products out, give each niche tag a **Relevance profile** (desired types, brands, synonyms, exclusions, examples) and the store a **Relevance** card (instructions, always-exclude accessories/parts/generic, condition, price range). Hermes then asks the LLM to admit or reject each new candidate before ingesting it, and logs every decision in the run report. Stores without a profile behave as before. See [Stores → Relevance](docs/docs/stores.md#relevance) and [Tags → Relevance profile](docs/docs/tags.md#relevance-profile-discovery).
+
 How Hermes browses each marketplace (headless or real Chrome, user agent, stealth script, LLM page segment size, image and offer URL filters) can be tuned per store in the collapsed **Agent browser (advanced)** card. Blank fields use the marketplace's built-in defaults. See [Stores → Agent browser](docs/docs/stores.md#agent-browser-advanced) for every field.
 
 Run a store through Docker Compose:
