@@ -119,14 +119,6 @@ class StoreResource extends Resource
                     ->columns(2)
                     ->visible(fn (Get $get): bool => in_array($get('access_mode'), [AccessMode::Agentic->value, AccessMode::Api->value], true)),
 
-                Section::make('Relevance')
-                    ->description('Which discovered products this strategy should admit, on top of its niches\' relevance profiles. The agent evaluates each new candidate against these rules before ingesting it. Leave everything empty to keep discovery unfiltered.')
-                    ->schema(self::discoveryProfileFormFields())
-                    ->statePath('discovery_profile')
-                    ->columns(2)
-                    ->collapsible()
-                    ->visible(fn (Get $get): bool => $get('access_mode') === AccessMode::Agentic->value),
-
                 Section::make('Agent browser (advanced)')
                     ->description('How Hermes browses this marketplace. Leave a field blank to use the marketplace default.')
                     ->schema(self::agentBrowserFormFields())
@@ -328,6 +320,18 @@ class StoreResource extends Resource
                 ->maxValue(5)
                 ->step(0.1)
                 ->default(0),
+
+            // A strategy choice rather than a niche property: the same niche can
+            // be strict on one marketplace and permissive on another. Only
+            // applies to niches that have a relevance profile.
+            Select::make('settings.discovery_brand_policy')
+                ->label('Brand requirement')
+                ->options([
+                    'any' => 'Any brand (generic items included)',
+                    'priority' => 'Only the niches\' priority brands',
+                ])
+                ->placeholder('Recognized brands only (default)')
+                ->helperText('Applies to niches with a relevance profile. Recognized excludes unbranded, unknown and marketplace-only brands; priority admits only brands listed in the niche\'s "Priority brands".'),
         ];
     }
 
@@ -377,47 +381,6 @@ class StoreResource extends Resource
                 ->suffix('%')
                 ->hidden(fn (Get $get): bool => $get('access_mode') !== AccessMode::Api->value)
                 ->columnSpanFull(),
-        ];
-    }
-
-    /**
-     * Strategy-level relevance customizations sent to Hermes together with
-     * the relevance profile of each of the store's niches (tags).
-     *
-     * @return array<int, \Filament\Forms\Components\Component>
-     */
-    protected static function discoveryProfileFormFields(): array
-    {
-        return [
-            Forms\Components\Textarea::make('instructions')
-                ->label('Additional instructions')
-                ->placeholder('e.g. Look for smartphones, prioritizing Samsung, Apple, Motorola and Xiaomi. Exclude cases, screen protectors, cables, parts and refurbished phones. Also accept entry-level models up to R$ 1,500.')
-                ->helperText('Free text sent to the agent as the strategy\'s intent. Prefer the structured fields below for hard rules.')
-                ->rows(3)
-                ->maxLength(2000)
-                ->columnSpanFull(),
-
-            Forms\Components\CheckboxList::make('exclude_kinds')
-                ->label('Always exclude')
-                ->options([
-                    'accessories' => 'Accessories',
-                    'parts' => 'Parts / spare parts',
-                    'generic' => 'Generic / unbranded items',
-                ])
-                ->columns(3)
-                ->columnSpanFull(),
-
-            Select::make('condition')
-                ->label('Condition')
-                ->options(['new' => 'New only (reject refurbished / used)'])
-                ->placeholder('Any condition'),
-
-            Forms\Components\Group::make([
-                TextInput::make('min_price')->label('Minimum price')->numeric()->minValue(0),
-                TextInput::make('max_price')->label('Maximum price')->numeric()->minValue(0),
-            ])->columns(2),
-
-            ...TagResource::relevanceProfileFields(),
         ];
     }
 

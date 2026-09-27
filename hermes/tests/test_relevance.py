@@ -1,4 +1,4 @@
-"""Relevance admission: profile rules, LLM decision contract, cache and discovery integration."""
+"""Relevance admission: niche rules, LLM description contract, code-side admission, cache and integration."""
 import sys
 import unittest
 from contextlib import ExitStack
@@ -9,21 +9,22 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 from agent import Agent
 from browser_tools import BrowserToolSet, BrowserToolResult, ProductCandidate
 from llm_client import LLMClientError, ToolCall
-from relevance import DecisionCache, RelevanceEvaluator, RelevanceProfile, parse_decisions
+from main import evaluate_request
+from relevance import (DECISION_CACHE, DecisionCache, RelevanceDecision, RelevanceEvaluator,
+                       RelevanceProfile, parse_decisions)
 
-SMARTPHONE_PROFILE = {
-    'strategy': {
-        'instructions': 'Buscar smartphones, priorizando Samsung e Apple.',
-        'exclude_kinds': ['accessories', 'bogus'],
-        'condition': 'new',
-        'max_price': 1500,
-        'exclude_terms': ['película'],
-    },
-    'niches': {
-        'Celulares': {'include_product_types': ['smartphone', ' '], 'exclude_terms': ['capa']},
-        'Other niche not configured': {'include_product_types': ['tv']},
-    },
+PHONES = {
+    'instructions': 'Smartphones, priorizando Samsung e Apple.',
+    'include_product_types': ['smartphone', ' '],
+    'include_brands': ['Samsung', 'Apple'],
+    'exclude_terms': ['capa', 'película'],
+    'max_price': 1500,
+    'brand_policy': 'removed option',
 }
+
+
+def profile(niches=None, tags=('Celulares',)):
+    return RelevanceProfile({'niches': niches if niches is not None else {'Celulares': PHONES}}, list(tags))
 
 
 def candidate(title, tag=None, price='100.00', original_price='200.00'):
@@ -31,97 +32,150 @@ def candidate(title, tag=None, price='100.00', original_price='200.00'):
                             price=price, original_price=original_price, tag=tag)
 
 
-def decision(index, classification='relevant', ingest=True, confidence=0.9, **extra):
-    return {'index': index, 'ingest': ingest, 'classification': classification,
-            'confidence': confidence, 'reason': 'test', **extra}
+def described(index, classification='relevant', confidence=0.9, **extra):
+    return {'index': index, 'classification': classification, 'confidence': confidence, 'reason': 'test',
+            'brand_tier': 'recognized', 'sample': False, **extra}
+
+
+def description(classification='relevant', confidence=0.9, **extra):
+    return RelevanceDecision(ingest=False, classification=classification, confidence=confidence,
+                             reason='test', **{'brand_tier': 'recognized', 'sample': False, **extra})
 
 
 class RelevanceProfileTest(unittest.TestCase):
     def test_profile_keeps_only_known_values_and_configured_niches(self):
-        profile = RelevanceProfile(SMARTPHONE_PROFILE, ['Celulares'])
+        p = profile({'Celulares': PHONES, 'Not configured here': {'include_product_types': ['tv']}})
 
-        self.assertTrue(profile.enabled)
-        self.assertEqual(profile.strategy['exclude_kinds'], ['accessories'])
-        self.assertEqual(profile.niches, {'Celulares': {'include_product_types': ['smartphone'],
-                                                        'exclude_terms': ['capa']}})
+        self.assertTrue(p.enabled)
+        self.assertEqual(list(p.niches), ['Celulares'])
+        self.assertEqual(p.niches['Celulares']['include_product_types'], ['smartphone'])
+        self.assertEqual(p.niches['Celulares']['max_price'], 1500)
+        self.assertNotIn('brand_policy', p.niches['Celulares'])
+
+    def test_legacy_strategy_section_is_ignored(self):
+        self.assertFalse(RelevanceProfile({'strategy': {'max_price': 10}}, ['Celulares']).enabled)
 
     def test_empty_or_invalid_profile_is_disabled(self):
-        for raw in (None, [], {}, {'strategy': {}, 'niches': {'Celulares': {'include_brands': []}}}):
+        for raw in (None, [], {}, {'niches': {'Celulares': {'include_brands': [], 'condition': 'new'}}}):
             self.assertFalse(RelevanceProfile(raw, ['Celulares']).enabled)
 
     def test_exclude_terms_match_whole_words_only(self):
-        profile = RelevanceProfile(SMARTPHONE_PROFILE, ['Celulares'])
+        p = profile()
 
-        rejected = profile.rule_decision('Capa de silicone para Galaxy S24', 'Celulares')
-        kept = profile.rule_decision('Smartphone 256GB de capacidade', 'Celulares')
+        self.assertEqual(p.rule_decision('Capa de silicone para Galaxy S24', 'Celulares').classification, 'excluded')
+        self.assertIsNone(p.rule_decision('Smartphone 256GB de capacidade', 'Celulares'))
 
-        self.assertEqual(rejected.classification, 'excluded')
+    def test_niche_rules_do_not_leak_to_other_niches(self):
+        p = profile({'Celulares': {'exclude_terms': ['capa']}}, tags=('Celulares', 'Acessórios'))
+
+        self.assertIsNone(p.rule_decision('Capa para iPhone', 'Acessórios'))
+        self.assertIsNone(p.rule_decision('Capa para iPhone', None))
+        self.assertIsNotNone(p.rule_decision('Capa para iPhone', 'Celulares'))
+
+    def test_single_niche_rules_apply_without_a_listing_niche(self):
+        self.assertIsNotNone(profile().rule_decision('Capa para iPhone', None))
+
+    def test_price_is_a_niche_rule(self):
+        p = profile()
+
+        self.assertEqual(p.rule_decision('Galaxy S24', 'Celulares', price=5000).excluded_reason, 'price range')
+        self.assertIsNone(p.rule_decision('Galaxy A15', 'Celulares', price=999))
+        self.assertIsNone(p.price_rejection(5000, 'Other'))
+
+
+class AdmissionTest(unittest.TestCase):
+    def test_only_relevant_and_secondary_with_enough_confidence_are_admitted(self):
+        p = profile()
+        for classification in ('relevant', 'secondary'):
+            self.assertTrue(p.admit(description(classification, niche='Celulares'), 'Galaxy A15', 0.5).ingest)
+        for classification in ('generic', 'accessory', 'part', 'excluded', 'off_niche', 'ambiguous'):
+            decision = p.admit(description(classification, niche='Celulares'), 'Galaxy A15', 0.5)
+            self.assertFalse(decision.ingest)
+            self.assertEqual(decision.excluded_reason, classification)
+        self.assertFalse(p.admit(description('relevant', confidence=0.3), 'Galaxy A15', 0.5).ingest)
+
+    def test_unbranded_and_unknown_brands_are_never_admitted(self):
+        p = profile()
+        for tier in ('unknown', 'none', None):
+            decision = p.admit(description('relevant', niche='Celulares', brand_tier=tier), 'Kit Extensão de Cílios', 0.5)
+            self.assertFalse(decision.ingest)
+            self.assertEqual(decision.excluded_reason, f"brand: {tier or 'unknown'}")
+        self.assertTrue(p.admit(description('secondary', niche='Celulares', brand_tier='priority'), 'x', 0.5).ingest)
+
+    def test_a_priority_brand_in_the_title_overrides_a_wrong_extraction(self):
+        decision = profile().admit(description('relevant', niche='Celulares', brand_tier='none'),
+                                   'Smartphone Samsung Galaxy A15', 0.5)
+
+        self.assertTrue(decision.ingest)
+        self.assertEqual((decision.brand_tier, decision.matched_brand), ('priority', 'Samsung'))
+
+    def test_samples_are_never_admitted(self):
+        decision = profile().admit(description('relevant', niche='Celulares', sample=True), 'Kit de Sachês', 0.5)
+
+        self.assertFalse(decision.ingest)
+        self.assertEqual(decision.excluded_reason, 'sample size')
+
+
+class BrandPolicyTest(unittest.TestCase):
+    NICHES = {'Celulares': {'include_brands': ['Samsung', 'Apple']}}
+
+    def admit(self, policy, title, **decision):
+        p = RelevanceProfile({'niches': self.NICHES, 'brand_policy': policy}, ['Celulares'])
+        return p.admit(description(niche='Celulares', **decision), title, 0.5)
+
+    def test_recognized_is_the_default_policy(self):
+        self.assertEqual(RelevanceProfile({'niches': self.NICHES}, ['Celulares']).brand_policy, 'recognized')
+        self.assertEqual(RelevanceProfile({'niches': self.NICHES, 'brand_policy': 'bogus'}, ['Celulares']).brand_policy,
+                         'recognized')
+
+    def test_any_brand_admits_generic_and_unbranded_items(self):
+        self.assertTrue(self.admit('any', 'Fone TWS', classification='generic', brand_tier='none').ingest)
+        self.assertTrue(self.admit('any', 'Fone Kaidi', classification='relevant', brand_tier='unknown').ingest)
+        self.assertFalse(self.admit('any', 'Cabo USB', classification='accessory', brand_tier='none').ingest)
+        self.assertFalse(self.admit('any', 'Sachê', brand_tier='recognized', sample=True).ingest)
+
+    def test_recognized_rejects_generic_unknown_and_unbranded(self):
+        self.assertFalse(self.admit('recognized', 'Fone TWS', classification='generic', brand_tier='none').ingest)
+        self.assertFalse(self.admit('recognized', 'Fone Kaidi', brand_tier='unknown').ingest)
+        self.assertTrue(self.admit('recognized', 'Smartphone Motorola', brand_tier='recognized').ingest)
+
+    def test_priority_only_admits_brands_matched_by_the_code(self):
+        self.assertTrue(self.admit('priority', 'Smartphone Samsung Galaxy A15', brand_tier='none').ingest)
+        self.assertTrue(self.admit('priority', 'iPhone 15', matched_brand='Apple', brand_tier='recognized').ingest)
+        rejected = self.admit('priority', 'Smartphone Motorola G84', matched_brand='Motorola', brand_tier='priority')
         self.assertFalse(rejected.ingest)
-        self.assertEqual(rejected.source, 'rule')
-        self.assertIsNone(kept)
-
-    def test_niche_exclusion_does_not_reject_a_product_of_another_niche(self):
-        profile = RelevanceProfile(
-            {'niches': {'Celulares': {'exclude_terms': ['capa']}}}, ['Celulares', 'Acessórios'])
-
-        self.assertIsNone(profile.rule_decision('Capa para iPhone', 'Acessórios'))
-        self.assertIsNone(profile.rule_decision('Capa para iPhone', None))
-        self.assertIsNotNone(profile.rule_decision('Capa para iPhone', 'Celulares'))
-
-    def test_new_only_condition_rejects_refurbished(self):
-        profile = RelevanceProfile(SMARTPHONE_PROFILE, ['Celulares'])
-
-        self.assertEqual(profile.rule_decision('iPhone 13 Recondicionado', None).excluded_reason,
-                         'condition: recondicionado')
-
-    def test_price_constraints(self):
-        profile = RelevanceProfile({'strategy': {'min_price': 100, 'max_price': 1500}}, [])
-
-        self.assertIsNotNone(profile.price_rejection(1600))
-        self.assertIsNotNone(profile.price_rejection(50))
-        self.assertIsNone(profile.price_rejection(999))
-        self.assertIsNone(profile.price_rejection(None))
+        self.assertEqual(rejected.excluded_reason, 'brand: not a priority brand')
 
 
 class ParseDecisionsTest(unittest.TestCase):
-    def test_invalid_entries_are_dropped(self):
+    def test_invalid_entries_are_dropped_and_admission_is_not_decided_by_the_llm(self):
         decisions = parse_decisions({'decisions': [
-            decision(0),
-            decision(0),  # duplicate index
-            decision(5),  # out of range
-            decision(1, classification='great'),
-            {**decision(2), 'confidence': 1.5},
-            {**decision(3), 'ingest': 'yes'},
-        ]}, count=4, tags=['Celulares'], min_confidence=0.5)
+            {**described(0, niche='Celulares'), 'ingest': True},
+            described(0),  # duplicate index
+            described(5),  # out of range
+            described(1, classification='great'),
+            {**described(2), 'confidence': 1.5},
+            described(3, niche='Unknown'),
+            {**described(1), 'brand_tier': 'famous'},
+            {**described(2), 'sample': 'no'},
+        ]}, count=4, tags=['Celulares'])
 
-        self.assertEqual(list(decisions), [0])
-
-    def test_admission_requires_admitted_class_and_confidence(self):
-        decisions = parse_decisions({'decisions': [
-            decision(0, classification='accessory', ingest=True),
-            decision(1, classification='secondary', ingest=True, confidence=0.3),
-            decision(2, classification='secondary', ingest=True, niche='Unknown'),
-            decision(3, classification='relevant', ingest=True, niche='Celulares', matched_brand='Samsung'),
-        ]}, count=4, tags=['Celulares'], min_confidence=0.5)
-
+        self.assertEqual(sorted(decisions), [0, 3])
+        self.assertEqual((decisions[0].brand_tier, decisions[0].sample), ('recognized', False))
         self.assertFalse(decisions[0].ingest)
-        self.assertFalse(decisions[1].ingest)
-        self.assertTrue(decisions[2].ingest)
-        self.assertIsNone(decisions[2].niche)
-        self.assertTrue(decisions[3].ingest)
-        self.assertEqual(decisions[3].niche, 'Celulares')
-        self.assertEqual(decisions[3].matched_brand, 'Samsung')
+        self.assertEqual(decisions[0].niche, 'Celulares')
+        self.assertIsNone(decisions[3].niche)
 
 
 class RelevanceEvaluatorTest(unittest.TestCase):
-    def evaluator(self, llm, cache=None):
-        profile = RelevanceProfile(SMARTPHONE_PROFILE, ['Celulares'])
-        return RelevanceEvaluator(llm, profile, cache=cache or DecisionCache())
+    def evaluator(self, llm, cache=None, niches=None, tags=('Celulares',)):
+        return RelevanceEvaluator(llm, profile(niches, tags), cache=cache or DecisionCache())
 
-    def test_rules_skip_the_llm_and_llm_decides_the_rest_in_one_batch(self):
+    def test_rules_skip_the_llm_and_the_code_admits_the_rest(self):
         llm = Mock()
         llm.chat_completion.return_value = ToolCall('evaluate_candidates', {'decisions': [
-            decision(0), decision(1, classification='accessory', ingest=False),
+            described(0, niche='Celulares', matched_brand='Samsung'),
+            described(1, classification='accessory', niche='Celulares'),
         ]})
         items = [('k0', candidate('Película de vidro')), ('k1', candidate('Galaxy A15')),
                  ('k2', candidate('Carregador turbo'))]
@@ -130,17 +184,32 @@ class RelevanceEvaluatorTest(unittest.TestCase):
 
         self.assertEqual([d.source for d in result], ['rule', 'llm', 'llm'])
         self.assertEqual([d.ingest for d in result], [False, True, False])
+        self.assertEqual(result[2].excluded_reason, 'accessory')
         llm.chat_completion.assert_called_once()
         payload = llm.chat_completion.call_args.args[0][1]['content']
         self.assertIn('Galaxy A15', payload)
         self.assertNotIn('Película de vidro', payload)
-        self.assertNotIn('Other niche not configured', payload)
+        self.assertNotIn('"ingest"', str(llm.chat_completion.call_args.args[1]))
+
+    def test_rules_of_the_evaluated_niche_apply_after_the_llm_picks_it(self):
+        llm = Mock()
+        llm.chat_completion.return_value = ToolCall('evaluate_candidates', {'decisions': [
+            described(0, niche='Beleza'),
+        ]})
+        niches = {'Beleza': {'exclude_terms': ['vela']}, 'Eletrônicos': {'include_product_types': ['caixa de som']}}
+
+        result = self.evaluator(llm, niches=niches, tags=('Beleza', 'Eletrônicos')).evaluate(
+            [('k0', candidate('Vela LED Eletrônica', tag='Eletrônicos'))], timeout_seconds=30)
+
+        self.assertFalse(result[0].ingest)
+        self.assertEqual(result[0].source, 'rule')
+        self.assertEqual(result[0].niche, 'Beleza')
 
     def test_incomplete_response_is_retried_then_missing_items_fail_closed(self):
         llm = Mock()
         llm.chat_completion.side_effect = [
-            ToolCall('evaluate_candidates', {'decisions': [decision(0)]}),
-            ToolCall('evaluate_candidates', {'decisions': [decision(0)]}),
+            ToolCall('evaluate_candidates', {'decisions': [described(0, matched_brand='Samsung')]}),
+            ToolCall('evaluate_candidates', {'decisions': [described(0, matched_brand='Samsung')]}),
         ]
         items = [('k0', candidate('Galaxy A15')), ('k1', candidate('Moto G84'))]
 
@@ -160,10 +229,11 @@ class RelevanceEvaluatorTest(unittest.TestCase):
         self.assertFalse(result[0].ingest)
         self.assertEqual(result[0].source, 'error')
 
-    def test_repeated_candidates_use_the_cache(self):
+    def test_cached_descriptions_are_readmitted_with_the_current_rules(self):
         cache = DecisionCache()
         llm = Mock()
-        llm.chat_completion.return_value = ToolCall('evaluate_candidates', {'decisions': [decision(0)]})
+        llm.chat_completion.return_value = ToolCall('evaluate_candidates', {'decisions': [
+            described(0, matched_brand='Samsung')]})
         items = [('k0', candidate('Galaxy A15'))]
 
         self.evaluator(llm, cache).evaluate(items, timeout_seconds=30)
@@ -177,7 +247,8 @@ class RelevanceEvaluatorTest(unittest.TestCase):
         cache = DecisionCache()
         llm = Mock()
         llm.chat_completion.side_effect = [LLMClientError('down'),
-                                           ToolCall('evaluate_candidates', {'decisions': [decision(0)]})]
+                                           ToolCall('evaluate_candidates', {'decisions': [
+                                               described(0, matched_brand='Samsung')]})]
         items = [('k0', candidate('Galaxy A15'))]
 
         self.evaluator(llm, cache).evaluate(items, timeout_seconds=30)
@@ -186,7 +257,66 @@ class RelevanceEvaluatorTest(unittest.TestCase):
         self.assertEqual(second[0].source, 'llm')
 
 
+class EvaluateRequestTest(unittest.TestCase):
+    def setUp(self):
+        DECISION_CACHE._entries.clear()
+
+    def body(self, **overrides):
+        return {
+            'tags': ['Beleza', 'Eletrônicos'],
+            'relevance_profile': {'niches': {
+                'Beleza': {'include_product_types': ['unhas']},
+                'Eletrônicos': {'include_product_types': ['smartphone']},
+            }},
+            'candidates': [
+                {'key': 'k-nail', 'url': 'https://shop.example/nail', 'title': 'Lixa Eletrônica de Unha', 'price': 50, 'tag': 'Eletrônicos'},
+                {'key': 'k-bags', 'title': 'Kit 100 Saquinhos Eletrônicos', 'price': 10, 'tag': 'Eletrônicos'},
+            ],
+            **overrides,
+        }
+
+    def test_decisions_are_keyed_and_the_evaluated_niche_is_returned(self):
+        llm = Mock()
+        llm.chat_completion.return_value = ToolCall('evaluate_candidates', {'decisions': [
+            described(0, niche='Beleza'),
+            described(1, classification='off_niche'),
+        ]})
+
+        status, payload = evaluate_request(self.body(), llm_client=llm)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload['enabled'])
+        self.assertEqual([(d['key'], d['ingest'], d['niche']) for d in payload['decisions']],
+                         [('k-nail', True, 'Beleza'), ('k-bags', False, 'Eletrônicos')])
+        sent = llm.chat_completion.call_args.args[0][1]['content']
+        self.assertIn('"listing_niche": "Eletrônicos"', sent)
+
+    def test_without_usable_profile_nothing_is_evaluated(self):
+        llm = Mock()
+
+        status, payload = evaluate_request(self.body(relevance_profile={'niches': {'Other': {'include_brands': ['X']}}}),
+                                           llm_client=llm)
+
+        self.assertEqual((status, payload), (200, {'enabled': False, 'decisions': []}))
+        llm.chat_completion.assert_not_called()
+
+    def test_invalid_requests_are_rejected(self):
+        for body in (
+            self.body(candidates='x'),
+            self.body(candidates=[{'key': '', 'title': 'x'}]),
+            self.body(candidates=[{'key': 'k', 'title': ' '}]),
+            self.body(tags='Beleza'),
+            self.body(relevance_profile=[]),
+            self.body(candidates=[{'key': f'k{i}', 'title': 't'} for i in range(301)]),
+        ):
+            status, _ = evaluate_request(body, llm_client=Mock())
+            self.assertEqual(status, 400)
+
+
 class RelevanceDiscoveryFlowTest(unittest.TestCase):
+    def setUp(self):
+        DECISION_CACHE._entries.clear()
+
     def run_flow(self, items, llm_responses, relevance_profile, tags=None, min_products=1):
         llm = Mock()
         llm.chat_completion.side_effect = llm_responses
@@ -200,10 +330,10 @@ class RelevanceDiscoveryFlowTest(unittest.TestCase):
             'links': [{'text': item['title'], 'url': item['url']} for item in items],
             'buttons': [],
         }
-        sent_urls = []
+        sent = []
 
-        def send(candidates, *args, **kwargs):
-            sent_urls.append(candidates[0].url)
+        def send(candidates, tags, *args, **kwargs):
+            sent.append((candidates[0].url, tags))
             return {'success': 1, 'existing': 0, 'failed': 0, 'created_urls': [candidates[0].url]}
 
         with ExitStack() as stack:
@@ -220,64 +350,61 @@ class RelevanceDiscoveryFlowTest(unittest.TestCase):
             enriched = stack.enter_context(patch.object(BrowserToolSet, '_tool_get_product_metadata',
                                                         return_value=BrowserToolResult(True, 'ok', {})))
             report = agent.run()
-        return report, sent_urls, enriched, llm
+        return report, sent, enriched, llm
 
     @staticmethod
-    def item(name):
-        return {'url': f'https://example.com/{name}', 'title': name, 'price': '100.00'}
+    def item(name, price='100.00'):
+        return {'url': f'https://example.com/{name}', 'title': name, 'price': price}
 
     def test_only_admitted_candidates_are_enriched_and_ingested(self):
         phone, case, cable = self.item('Galaxy A15'), self.item('Capa Galaxy'), self.item('Cabo USB-C')
-        report, sent_urls, enriched, llm = self.run_flow(
+        report, sent, enriched, _ = self.run_flow(
             [phone, case, cable],
             [ToolCall('collect_page', {'candidates': [phone, case, cable]}),
              ToolCall('evaluate_candidates', {'decisions': [
-                 decision(0, niche='Celulares', normalized_product_type='smartphone'),
-                 decision(1, classification='accessory', ingest=False),
+                 described(0, niche='Celulares', matched_brand='Samsung', normalized_product_type='smartphone'),
+                 described(1, classification='accessory', niche='Celulares'),
              ]})],
-            {'niches': {'Celulares': {'include_product_types': ['smartphone'], 'exclude_terms': ['capa']}}},
+            {'niches': {'Celulares': {'include_brands': ['Samsung'], 'exclude_terms': ['capa']}}},
         )
 
-        self.assertEqual(sent_urls, [phone['url']])
+        self.assertEqual([url for url, _ in sent], [phone['url']])
         self.assertEqual(enriched.call_count, 1)
-        self.assertEqual(report['relevance']['enabled'], True)
         self.assertEqual(report['relevance']['decisions_by_classification'], {'excluded': 1, 'relevant': 1, 'accessory': 1})
         self.assertEqual(report['candidates'][0]['relevance']['normalized_product_type'], 'smartphone')
         relevance_steps = [step for step in report['steps'] if step['action'] == 'relevance']
-        self.assertEqual(len(relevance_steps), 3)
         self.assertEqual({step['source'] for step in relevance_steps}, {'rule', 'llm'})
 
-    def test_llm_niche_is_used_when_listing_did_not_pick_one(self):
-        phone = self.item('Galaxy A15')
-        report, _, _, _ = self.run_flow(
-            [phone],
-            [ToolCall('collect_page', {'candidates': [phone]}),
-             ToolCall('evaluate_candidates', {'decisions': [decision(0, niche='Celulares')]})],
-            {'niches': {'Celulares': {'include_product_types': ['smartphone']}}},
-            tags=['Celulares', 'Casa'],
+    def test_evaluated_niche_replaces_the_listing_niche(self):
+        massager = self.item('Massageador Elétrico Corporal')
+        _, sent, _, _ = self.run_flow(
+            [massager],
+            [ToolCall('collect_page', {'candidates': [{**massager, 'tag': 'Eletrônicos'}]}),
+             ToolCall('evaluate_candidates', {'decisions': [described(0, niche='Beleza')]})],
+            {'niches': {'Beleza': {'include_product_types': ['massageador']}}},
+            tags=['Beleza', 'Eletrônicos'],
         )
 
-        self.assertEqual(report['candidates'][0]['relevance']['niche'], 'Celulares')
+        self.assertEqual(sent, [(massager['url'], ['Beleza'])])
 
     def test_without_profile_the_flow_is_unchanged(self):
         phone = self.item('Galaxy A15')
-        report, sent_urls, _, llm = self.run_flow(
-            [phone], [ToolCall('collect_page', {'candidates': [phone]})], None)
+        report, sent, _, llm = self.run_flow([phone], [ToolCall('collect_page', {'candidates': [phone]})], None)
 
-        self.assertEqual(sent_urls, [phone['url']])
+        self.assertEqual(len(sent), 1)
         self.assertEqual(llm.chat_completion.call_count, 1)
         self.assertEqual(report['relevance'], {'enabled': False, 'decisions_by_classification': {}})
 
-    def test_strategy_price_limit_is_a_deterministic_filter(self):
-        cheap, expensive = self.item('Moto G24'), {**self.item('Galaxy S24'), 'price': '5000.00'}
-        _, sent_urls, _, llm = self.run_flow(
+    def test_niche_price_limit_is_applied_before_the_llm(self):
+        cheap, expensive = self.item('Moto G24'), self.item('Galaxy S24', price='5000.00')
+        _, sent, _, llm = self.run_flow(
             [cheap, expensive],
             [ToolCall('collect_page', {'candidates': [cheap, expensive]}),
-             ToolCall('evaluate_candidates', {'decisions': [decision(0)]})],
-            {'strategy': {'max_price': 1500}},
+             ToolCall('evaluate_candidates', {'decisions': [described(0)]})],
+            {'niches': {'Celulares': {'max_price': 1500}}},
         )
 
-        self.assertEqual(sent_urls, [cheap['url']])
+        self.assertEqual([url for url, _ in sent], [cheap['url']])
         payload = llm.chat_completion.call_args_list[1].args[0][1]['content']
         self.assertNotIn('Galaxy S24', payload)
 

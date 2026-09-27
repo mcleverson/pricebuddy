@@ -46,7 +46,7 @@ class TagResource extends Resource
                     ]),
 
                 Forms\Components\Section::make('Relevance profile')
-                    ->description(__('Guides discovery (Hermes) on which products truly belong to this niche. Not a strict whitelist: the agent also admits new products semantically related to what is described here. Leave empty to keep discovery unfiltered by niche.'))
+                    ->description(__('Rules for which discovered products belong to this niche, applied by every store that uses it, in both agentic (Hermes) and API (e.g. Shopee) discovery. Not a strict whitelist: new products semantically related to what is described here are also recognized. Leave empty to keep discovery unfiltered for this niche.'))
                     ->schema(self::relevanceProfileFields())
                     ->statePath('relevance_profile')
                     ->columns(2)
@@ -55,8 +55,10 @@ class TagResource extends Resource
     }
 
     /**
-     * Niche relevance fields, shared with the Store's discovery profile so a
-     * strategy can add to (or narrow) its niches with the same vocabulary.
+     * Niche relevance profile (tags.relevance_profile). The LLM only describes
+     * each candidate; the code admits relevant/secondary ones of this niche.
+     * Accessories, parts, refurbished items and brand exclusions are expressed
+     * through the lists below; unbranded or unknown-brand items are never admitted.
      *
      * @return array<int, \Filament\Forms\Components\Component>
      */
@@ -68,6 +70,19 @@ class TagResource extends Resource
             ->splitKeys(['Enter', ',']);
 
         return [
+            Forms\Components\Textarea::make('instructions')
+                ->label('Additional instructions')
+                ->placeholder('e.g. Entry-level smartphones are welcome; lesser-known but established brands are acceptable.')
+                ->helperText('Free text sent to the agent as this niche\'s intent. Prefer the structured fields below for hard rules.')
+                ->rows(2)
+                ->maxLength(2000)
+                ->columnSpanFull(),
+
+            Forms\Components\Group::make([
+                Forms\Components\TextInput::make('min_price')->label('Minimum price')->numeric()->minValue(0),
+                Forms\Components\TextInput::make('max_price')->label('Maximum price')->numeric()->minValue(0),
+            ])->columns(2),
+
             $list('include_product_types', 'Desired product types', 'e.g. smartphone, air fryer, robot vacuum.'),
             $list('include_brands', 'Priority brands', 'Brands to prioritize. Other brands are still accepted when relevant.'),
             $list('include_products', 'Relevant products / families / models', 'e.g. Galaxy S, iPhone, Redmi Note.'),

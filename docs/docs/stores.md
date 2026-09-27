@@ -51,35 +51,17 @@ discovery, like Shopee) shows a **Discovery** card:
 | Minimum sales (historical) | Skip candidates with fewer historical sales than this. 0 = no minimum. |
 | Minimum rating | Skip candidates (and, when an Api provider fans out by shop, shops) rated below this, on a 0-5 scale. 0 = no minimum. |
 | Minimum per niche (%) | *(Api only)* Guarantee at least this share of the target from each niche before filling the rest from any. 0 = no floor. |
+| Brand requirement | For niches with a [relevance profile](./tags.md#relevance-profile-discovery): **Recognized brands only** (default), **Any brand** (generic items included) or **Only the niches' priority brands**. A per-store choice, so the same niche can be strict on one marketplace and permissive on another. |
 
 Agentic browses the Visit URLs with Hermes; Api queries the marketplace's own
 API once per niche instead — no starting URLs needed. Either way, matching
 products get added to your catalog. See the [main README](https://github.com/jez500/pricebuddy#discovery-agent-hermes)
 for how to run discovery from the CLI.
 
-### Relevance
-
-When **Collection mode** is **Agentic**, a **Relevance** card holds the
-strategy's own rules for which discovered products to admit, on top of the
-[relevance profile](./tags.md#relevance-profile-discovery) of each of its niches.
-
-| Field | Purpose |
-| --- | --- |
-| Additional instructions | Free text with the strategy's intent, sent to the agent as-is. |
-| Always exclude | Accessories, parts and/or generic items are never admitted. |
-| Condition | **New only** rejects refurbished, used, open-box and similar items. |
-| Minimum / maximum price | Candidates outside the range are rejected before the LLM. |
-| Include / exclude fields | Same fields as a tag's relevance profile, applied to the whole strategy. |
-
-For each new candidate, Hermes first applies the deterministic rules (price
-range, excluded terms and brands, condition), then asks the LLM for an admission
-decision: `relevant`, `secondary`, `generic`, `accessory`, `excluded`,
-`ambiguous` or `off_niche`. Only `relevant` and `secondary` candidates are
-ingested; each decision and its reason is logged in the run report. This is
-admission only: scoring and ranking happen later in PriceBuddy.
-
-When neither the store nor its niches have a profile, discovery works exactly as
-before, with no extra LLM calls.
+Which discovered products are admitted is configured on each niche, not on the
+store: see [Tags → Relevance profile](./tags.md#relevance-profile-discovery).
+The same rules apply to every store using that niche, in both Agentic and Api
+discovery.
 
 ### Agent browser (advanced)
 

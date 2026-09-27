@@ -117,6 +117,8 @@ class TagResourceTest extends TestCase
                 'relevance_profile.include_brands' => ['Samsung', 'Apple'],
                 'relevance_profile.exclude_terms' => ['capa', 'película'],
                 'relevance_profile.negative_examples' => ['Capa de silicone para Galaxy S24'],
+                'relevance_profile.instructions' => 'Smartphones de entrada são bem-vindos.',
+                'relevance_profile.max_price' => 1500,
             ])
             ->call('save')
             ->assertHasNoFormErrors();
@@ -126,6 +128,8 @@ class TagResourceTest extends TestCase
         $this->assertSame(['Samsung', 'Apple'], $profile['include_brands']);
         $this->assertSame(['capa', 'película'], $profile['exclude_terms']);
         $this->assertSame(['Capa de silicone para Galaxy S24'], $profile['negative_examples']);
+        $this->assertSame('Smartphones de entrada são bem-vindos.', $profile['instructions']);
+        $this->assertEquals(1500, $profile['max_price']);
     }
 
     public function test_can_delete_tag()

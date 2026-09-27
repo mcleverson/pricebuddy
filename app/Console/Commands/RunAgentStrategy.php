@@ -168,13 +168,13 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     }
 
     /**
-     * Objects so empty sections still serialize as `{}` for Hermes.
+     * All relevance rules live in the niche (tag), so every store and
+     * discovery path using a niche applies the same rules.
      *
-     * @return array{strategy: object, niches: object}|null
+     * @return array{niches: array<string, array<string, mixed>>, brand_policy?: string}|null
      */
     protected function relevanceProfile(Store $store): ?array
     {
-        $strategy = $this->cleanProfile((array) $store->discovery_profile);
         $niches = [];
 
         /** @var Tag $tag */
@@ -185,11 +185,16 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             }
         }
 
-        if ($strategy === [] && $niches === []) {
+        if ($niches === []) {
             return null;
         }
 
-        return ['strategy' => (object) $strategy, 'niches' => (object) $niches];
+        // Store-level strategy choice; unset keeps the default (recognized) in Hermes.
+        $brandPolicy = data_get($store->settings, 'discovery_brand_policy');
+
+        return in_array($brandPolicy, ['any', 'recognized', 'priority'], true)
+            ? ['niches' => $niches, 'brand_policy' => $brandPolicy]
+            : ['niches' => $niches];
     }
 
     /**
@@ -270,9 +275,9 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             'min_sales' => (int) $store->discovery_min_sales,
         ];
 
-        // Only this store's own profile and its niches' profiles — never a
-        // global catalog. Omitted entirely when nothing is configured, so
-        // Hermes keeps today's unfiltered behavior for those stores.
+        // Only the relevance profiles of this store's own niches — never a
+        // global catalog. Omitted entirely when none is configured, so Hermes
+        // keeps today's unfiltered behavior for those stores.
         $relevanceProfile = $this->relevanceProfile($store);
         if ($relevanceProfile !== null) {
             $payload['relevance_profile'] = $relevanceProfile;
@@ -368,8 +373,15 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             return ['success' => false, 'store' => $store, 'report' => []];
         }
 
+        $candidates = collect($candidates);
+        $relevance = null;
+        $relevanceProfile = $this->relevanceProfile($store);
+        if ($relevanceProfile !== null) {
+            [$candidates, $relevance] = $this->filterByRelevance($candidates, $tags, $relevanceProfile);
+        }
+
         $created = $this->ingestWithNicheFloor(
-            collect($candidates),
+            $candidates,
             $tags,
             $target,
             (int) $store->discovery_min_percentage_per_tag,
@@ -380,6 +392,10 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             'total_candidates' => $created,
             'min_products' => $target,
         ];
+
+        if ($relevance !== null) {
+            $report['relevance'] = $relevance;
+        }
 
         $this->saveReport($store, $report);
 
@@ -405,6 +421,99 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
      * @param  Collection<int, array<string, mixed>>  $candidates
      * @param  Collection<int, string>  $tags
      */
+    /**
+     * Apply the same relevance admission Hermes uses to API-discovered
+     * candidates, via Hermes's /evaluate endpoint (one implementation of the
+     * rules, prompt and cache for both discovery paths). Products the token
+     * owner already has pass through untouched (price refresh only); new ones
+     * are ingested only when admitted, under the niche the evaluation chose
+     * rather than the keyword that happened to find them. Fails closed: if
+     * the evaluation is unavailable, no new product is ingested.
+     *
+     * @param  Collection<int, array<string, mixed>>  $candidates
+     * @param  Collection<int, string>  $tags
+     * @param  array{niches: array<string, array<string, mixed>>, brand_policy?: string}  $profile
+     * @return array{0: Collection<int, array<string, mixed>>, 1: array<string, mixed>}
+     */
+    protected function filterByRelevance(Collection $candidates, Collection $tags, array $profile): array
+    {
+        $existing = collect();
+
+        try {
+            $token = (string) config('services.pricebuddy.api_token');
+            $baseUrl = rtrim((string) config('services.pricebuddy.api_base_url', 'http://app/api'), '/');
+            $keys = [];
+            $exists = [];
+
+            foreach ($candidates->pluck('url')->filter()->unique()->values()->chunk(100) as $urls) {
+                $response = Http::withToken($token)->post($baseUrl.'/discovery/candidates/check', ['urls' => $urls->values()->all()]);
+                if (! $response->successful()) {
+                    throw new \RuntimeException("candidate lookup failed with HTTP status {$response->status()}");
+                }
+                foreach ((array) $response->json('results', []) as $result) {
+                    $keys[$result['url']] = $result['key'];
+                    $exists[$result['url']] = (bool) $result['exists'];
+                }
+            }
+
+            $existing = $candidates->filter(fn (array $candidate): bool => $exists[$candidate['url'] ?? ''] ?? false);
+            $new = $candidates
+                ->filter(fn (array $candidate): bool => isset($keys[$candidate['url'] ?? '']) && ! $exists[$candidate['url']])
+                ->unique('url')
+                ->values();
+
+            $decisions = collect();
+            foreach ($new->chunk(300) as $chunk) {
+                $response = Http::timeout((int) config('services.hermes.timeout'))
+                    ->post(config('services.hermes.url', 'http://hermes:8000').'/evaluate', [
+                        'tags' => $tags->values()->all(),
+                        'relevance_profile' => $profile,
+                        'candidates' => $chunk->map(fn (array $candidate): array => [
+                            'key' => $keys[$candidate['url']],
+                            'url' => $candidate['url'],
+                            'title' => (string) ($candidate['title'] ?? ''),
+                            'price' => $candidate['price'] ?? null,
+                            'original_price' => $candidate['original_price'] ?? null,
+                            'tag' => data_get($candidate, 'tags.0'),
+                        ])->values()->all(),
+                    ]);
+                if (! $response->successful()) {
+                    throw new \RuntimeException("relevance evaluation failed with HTTP status {$response->status()}");
+                }
+                if ($response->json('enabled') !== true) {
+                    // No usable rule for these niches: behave as without a profile.
+                    return [$candidates, ['enabled' => false]];
+                }
+                $decisions = $decisions->merge($response->json('decisions', []));
+            }
+        } catch (\Throwable $exception) {
+            $this->warn("Relevance filter unavailable, no new product ingested: {$exception->getMessage()}");
+
+            // Known products are still refreshed; only new ones need an admission decision.
+            return [$existing->values(), ['enabled' => true, 'error' => $exception->getMessage()]];
+        }
+
+        $decisions = $decisions->keyBy('key');
+        $admitted = $new
+            ->filter(fn (array $candidate): bool => data_get($decisions->get($keys[$candidate['url']]), 'ingest') === true)
+            ->map(function (array $candidate) use ($decisions, $keys, $tags): array {
+                $niche = data_get($decisions->get($keys[$candidate['url']]), 'niche');
+
+                return $tags->contains($niche) ? [...$candidate, 'tags' => [$niche]] : $candidate;
+            });
+
+        return [$existing->merge($admitted)->values(), [
+            'enabled' => true,
+            'decisions_by_classification' => $decisions->countBy('classification')->all(),
+            'decisions' => $new->map(fn (array $candidate): array => [
+                'url' => $candidate['url'],
+                'title' => $candidate['title'] ?? null,
+                'listing_niche' => data_get($candidate, 'tags.0'),
+                ...collect($decisions->get($keys[$candidate['url']], []))->except('key')->all(),
+            ])->all(),
+        ]];
+    }
+
     protected function ingestWithNicheFloor(Collection $candidates, Collection $tags, int $target, int $minPercentagePerTag): int
     {
         $byTag = $candidates->groupBy(fn (array $candidate) => data_get($candidate, 'tags.0'));

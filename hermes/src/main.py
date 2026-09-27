@@ -1,7 +1,9 @@
 """Hermes HTTP service boundary.
 
 Exposes health and discovery endpoints used by the PriceBuddy app to trigger
-Hermes agent runs via the internal Docker network.
+Hermes agent runs via the internal Docker network, plus /evaluate, which
+applies the same relevance admission to candidates discovered elsewhere
+(e.g. a marketplace API) so both discovery paths share one set of rules.
 """
 
 import json
@@ -13,9 +15,58 @@ from typing import Any
 
 import config
 from agent import Agent
+from browser_tools import ProductCandidate
+from llm_client import LLMClient
+from relevance import RelevanceEvaluator, RelevanceProfile
+
+MAX_EVALUATE_CANDIDATES = 300
 
 
 DISCOVERY_LOCK = threading.Lock()
+
+
+def evaluate_request(body: dict[str, Any], llm_client: LLMClient | None = None) -> tuple[int, dict[str, Any]]:
+    """Admission decisions for externally discovered candidates.
+
+    Returns one decision per candidate, keyed by the caller's normalized
+    `key` (also the cache key). `enabled` is false when the profile has no
+    usable rule for these niches, meaning the caller should not filter.
+    """
+    tags = body.get("tags") or []
+    candidates = body.get("candidates")
+    profile_raw = body.get("relevance_profile")
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        return 400, {"status": "error", "error": "tags must be a list of strings"}
+    if profile_raw is not None and not isinstance(profile_raw, dict):
+        return 400, {"status": "error", "error": "relevance_profile must be an object"}
+    if not isinstance(candidates, list) or len(candidates) > MAX_EVALUATE_CANDIDATES:
+        return 400, {"status": "error", "error": f"candidates must be a list of at most {MAX_EVALUATE_CANDIDATES} items"}
+
+    items: list[tuple[str, ProductCandidate]] = []
+    for item in candidates:
+        if (not isinstance(item, dict) or not isinstance(item.get("key"), str) or not item["key"]
+                or not isinstance(item.get("title"), str) or not item["title"].strip()):
+            return 400, {"status": "error", "error": "each candidate needs a non-empty key and title"}
+        price = item.get("price")
+        original_price = item.get("original_price")
+        items.append((item["key"], ProductCandidate(
+            url=str(item.get("url") or item["key"]),
+            title=item["title"],
+            price=str(price) if price is not None else "",
+            original_price=str(original_price) if original_price is not None else None,
+            tag=item.get("tag") if item.get("tag") in tags else None,
+        )))
+
+    profile = RelevanceProfile(profile_raw, tags)
+    if not profile.enabled:
+        return 200, {"enabled": False, "decisions": []}
+
+    evaluator = RelevanceEvaluator(llm_client or LLMClient(), profile)
+    decisions = evaluator.evaluate(items, timeout_seconds=config.RUN_TIMEOUT_SECONDS)
+    return 200, {
+        "enabled": True,
+        "decisions": [{"key": key, **decision.as_dict()} for (key, _), decision in zip(items, decisions)],
+    }
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -33,7 +84,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if self.path != "/discover":
+        if self.path not in ("/discover", "/evaluate"):
             self.send_response(404)
             self.end_headers()
             return
@@ -52,6 +103,15 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if not isinstance(body, dict):
             self._send_json(400, {"status": "error", "error": "Expected a JSON object"})
+            return
+
+        if self.path == "/evaluate":
+            try:
+                status_code, payload = evaluate_request(body)
+            except Exception as exc:  # noqa: BLE001 - we want to return error to caller
+                logging.exception("Relevance evaluation request failed")
+                status_code, payload = 500, {"status": "error", "error": config.redact_secrets(str(exc))}
+            self._send_json(status_code, payload)
             return
 
         goal = body.get("goal")

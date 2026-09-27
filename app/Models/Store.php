@@ -44,7 +44,6 @@ use Spatie\Sluggable\SlugOptions;
  * @property Collection $products
  * @property ?User $user
  * @property ?string $cookies
- * @property ?array $discovery_profile
  */
 class Store extends Model
 {
@@ -93,7 +92,6 @@ class Store extends Model
         'discovery_min_percentage_per_tag',
         'discovery_min_sales',
         'discovery_min_rating',
-        'discovery_profile',
     ];
 
     protected function casts(): array
@@ -109,7 +107,6 @@ class Store extends Model
             'discovery_min_percentage_per_tag' => 'integer',
             'discovery_min_sales' => 'integer',
             'discovery_min_rating' => 'decimal:2',
-            'discovery_profile' => 'array',
         ];
     }
 

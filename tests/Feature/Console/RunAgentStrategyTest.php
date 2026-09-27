@@ -2,11 +2,15 @@
 
 namespace Tests\Feature\Console;
 
+use App\Contracts\ProductDataProvider;
 use App\Enums\AccessMode;
+use App\Enums\ProductDataOperation;
 use App\Filament\Resources\StoreResource\Pages\EditStore;
 use App\Models\Store;
 use App\Models\Tag;
 use App\Models\User;
+use App\Services\ProductData\ApiProviderRegistry;
+use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -81,8 +85,10 @@ class RunAgentStrategyTest extends TestCase
     public function test_relevance_profile_is_omitted_when_nothing_is_configured(): void
     {
         Storage::fake('local');
-        $store = $this->agenticStore(['discovery_profile' => ['instructions' => ' ', 'include_brands' => []]]);
-        $store->tags()->attach(Tag::factory()->create(['relevance_profile' => ['exclude_terms' => ['']]]));
+        $store = $this->agenticStore();
+        $store->tags()->attach(Tag::factory()->create(['relevance_profile' => [
+            'instructions' => ' ', 'include_brands' => [], 'exclude_terms' => [''], 'min_price' => null,
+        ]]));
         Http::fake(['*' => Http::response(['status' => 'completed', 'target_reached' => true], 200)]);
 
         $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
@@ -90,18 +96,15 @@ class RunAgentStrategyTest extends TestCase
         Http::assertSent(fn ($request) => ! isset($request['relevance_profile']));
     }
 
-    public function test_relevance_profile_contains_only_the_store_and_its_own_niches(): void
+    public function test_relevance_profile_contains_only_the_store_niches(): void
     {
         Storage::fake('local');
-        $store = $this->agenticStore(['discovery_profile' => [
+        $store = $this->agenticStore();
+        $phones = Tag::factory()->create(['name' => 'Celulares', 'relevance_profile' => [
             'instructions' => ' Buscar smartphones. ',
-            'exclude_kinds' => ['accessories'],
-            'condition' => 'new',
             'max_price' => '1500',
             'min_price' => null,
             'include_brands' => [' Samsung ', ''],
-        ]]);
-        $phones = Tag::factory()->create(['name' => 'Celulares', 'relevance_profile' => [
             'include_product_types' => ['smartphone'],
             'exclude_terms' => ['capa'],
         ]]);
@@ -113,20 +116,38 @@ class RunAgentStrategyTest extends TestCase
         $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->assertSuccessful();
 
         Http::assertSent(fn ($request) => json_decode(json_encode($request['relevance_profile']), true) === [
-            'strategy' => [
-                'instructions' => 'Buscar smartphones.',
-                'exclude_kinds' => ['accessories'],
-                'condition' => 'new',
-                'max_price' => 1500, // float 1500.0 before the JSON round-trip
-                'include_brands' => ['Samsung'],
-            ],
             'niches' => [
-                'Celulares' => ['include_product_types' => ['smartphone'], 'exclude_terms' => ['capa']],
+                'Celulares' => [
+                    'instructions' => 'Buscar smartphones.',
+                    'max_price' => 1500, // float 1500.0 before the JSON round-trip
+                    'include_brands' => ['Samsung'],
+                    'include_product_types' => ['smartphone'],
+                    'exclude_terms' => ['capa'],
+                ],
             ],
         ]);
     }
 
-    public function test_edit_form_saves_the_relevance_profile(): void
+    public function test_brand_requirement_is_sent_only_when_the_store_sets_it(): void
+    {
+        Storage::fake('local');
+        $niche = Tag::factory()->create(['relevance_profile' => ['include_brands' => ['Samsung']]]);
+        $strict = $this->agenticStore(['settings' => ['discovery_brand_policy' => 'priority']]);
+        $default = $this->agenticStore();
+        $strict->tags()->attach($niche);
+        $default->tags()->attach($niche);
+        Http::fake(['*' => Http::response(['status' => 'completed', 'target_reached' => true], 200)]);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $strict->id])->assertSuccessful();
+        $this->artisan('buddy:agent-strategy-run', ['store' => $default->id])->assertSuccessful();
+
+        Http::assertSent(fn ($request) => $request['store_id'] === $strict->id
+            && $request['relevance_profile']['brand_policy'] === 'priority');
+        Http::assertSent(fn ($request) => $request['store_id'] === $default->id
+            && ! array_key_exists('brand_policy', $request['relevance_profile']));
+    }
+
+    public function test_edit_form_saves_the_brand_requirement(): void
     {
         $user = User::factory()->create();
         $this->actingAs($user);
@@ -135,23 +156,167 @@ class RunAgentStrategyTest extends TestCase
 
         Livewire::test(EditStore::class, ['record' => $store->getRouteKey()])
             ->fillForm([
-                'discovery_profile.instructions' => 'Buscar smartphones.',
-                'discovery_profile.exclude_kinds' => ['accessories', 'parts'],
-                'discovery_profile.condition' => 'new',
-                'discovery_profile.max_price' => 1500,
-                'discovery_profile.include_brands' => ['Samsung', 'Apple'],
+                'settings.discovery_brand_policy' => 'any',
                 'settings.locale_settings.locale' => 'pt_BR',
                 'settings.locale_settings.currency' => 'BRL',
             ])
             ->call('save')
             ->assertHasNoFormErrors();
 
-        $profile = $store->fresh()->discovery_profile;
-        $this->assertSame('Buscar smartphones.', $profile['instructions']);
-        $this->assertSame(['accessories', 'parts'], $profile['exclude_kinds']);
-        $this->assertSame('new', $profile['condition']);
-        $this->assertEquals(1500, $profile['max_price']);
-        $this->assertSame(['Samsung', 'Apple'], $profile['include_brands']);
+        $this->assertSame('any', $store->fresh()->settings['discovery_brand_policy']);
+    }
+
+    /**
+     * An Api store (like Shopee) whose provider returns the given candidates.
+     *
+     * @param  array<int, array<string, mixed>>  $candidates
+     */
+    private function apiStoreReturning(array $candidates, array $overrides = []): Store
+    {
+        $provider = new class($candidates) implements ProductDataProvider
+        {
+            public function __construct(private array $candidates) {}
+
+            public function marketplaceId(): string
+            {
+                return 'fake_api';
+            }
+
+            public function isConfigured(Store $store): bool
+            {
+                return true;
+            }
+
+            public function supports(Store $store, ProductDataOperation $operation): bool
+            {
+                return true;
+            }
+
+            public function fetch(Store $store, ProductDataOperation $operation, array $context): array
+            {
+                return $this->candidates;
+            }
+
+            public static function credentialFields(): array
+            {
+                return [];
+            }
+        };
+        $this->app->instance(ApiProviderRegistry::class, new ApiProviderRegistry([$provider]));
+        config(['services.pricebuddy.api_token' => 'test-token', 'services.pricebuddy.api_base_url' => 'http://app/api']);
+
+        $store = Store::factory()->create(array_merge([
+            'access_mode' => AccessMode::Api,
+            'marketplace_id' => 'fake_api',
+            // High enough that the target never cuts ingestion short in these tests.
+            'agent_max_products' => 10,
+        ], $overrides));
+        $store->tags()->attach([
+            Tag::factory()->create(['name' => 'Beleza'])->id,
+            Tag::factory()->create(['name' => 'Eletrônicos', 'relevance_profile' => ['include_product_types' => ['smartphone']]])->id,
+        ]);
+
+        return $store;
+    }
+
+    private function apiCandidate(string $slug, string $title, string $tag): array
+    {
+        return ['url' => "https://shop.example/{$slug}", 'title' => $title, 'price' => 50, 'store_id' => 1, 'tags' => [$tag]];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>|null  $decisions  null makes /evaluate fail
+     */
+    private function fakeDiscoveryEndpoints(array $existingSlugs, ?array $decisions): void
+    {
+        Http::fake(function (HttpRequest $request) use ($existingSlugs, $decisions) {
+            if (str_ends_with($request->url(), '/discovery/candidates/check')) {
+                return Http::response(['results' => array_map(fn (string $url): array => [
+                    'url' => $url,
+                    'key' => 'key:'.basename($url),
+                    'exists' => in_array(basename($url), $existingSlugs, true),
+                    'has_image' => false,
+                ], $request['urls'])]);
+            }
+            if (str_ends_with($request->url(), '/evaluate')) {
+                return $decisions === null
+                    ? Http::response(['status' => 'error'], 500)
+                    : Http::response(['enabled' => true, 'decisions' => $decisions]);
+            }
+
+            return Http::response(['created' => true], 201);
+        });
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function ingestedCandidates(): array
+    {
+        return collect(Http::recorded())
+            ->map(fn (array $pair) => $pair[0])
+            ->filter(fn (HttpRequest $request): bool => str_ends_with($request->url(), '/discovery/candidates'))
+            ->map(fn (HttpRequest $request): array => $request->data())
+            ->values()
+            ->all();
+    }
+
+    public function test_api_discovery_ingests_only_admitted_candidates_under_the_evaluated_niche(): void
+    {
+        Storage::fake('local');
+        $store = $this->apiStoreReturning([
+            $this->apiCandidate('phone', 'Smartphone Galaxy A36', 'Eletrônicos'),
+            $this->apiCandidate('nail-file', 'Removedor de Cutículas e Lixa Eletrônica', 'Eletrônicos'),
+            $this->apiCandidate('bags', 'Kit 100 Saquinhos Autocolantes Eletrônicos', 'Eletrônicos'),
+            $this->apiCandidate('known', 'Produto já cadastrado', 'Beleza'),
+        ]);
+        $this->fakeDiscoveryEndpoints(['known'], [
+            ['key' => 'key:phone', 'ingest' => true, 'classification' => 'relevant', 'niche' => 'Eletrônicos', 'confidence' => 0.95, 'reason' => 'smartphone'],
+            ['key' => 'key:nail-file', 'ingest' => true, 'classification' => 'relevant', 'niche' => 'Beleza', 'confidence' => 0.9, 'reason' => 'unhas'],
+            ['key' => 'key:bags', 'ingest' => false, 'classification' => 'off_niche', 'niche' => null, 'confidence' => 0.95, 'reason' => 'embalagem'],
+        ]);
+
+        // Exit code reflects the (unreached) target; this test is about what gets ingested.
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->run();
+
+        $ingested = collect($this->ingestedCandidates())->mapWithKeys(fn (array $c) => [basename($c['url']) => $c['tags']]);
+        $this->assertSame(['known' => ['Beleza'], 'phone' => ['Eletrônicos'], 'nail-file' => ['Beleza']], $ingested->all());
+        Http::assertSent(fn (HttpRequest $request) => str_ends_with($request->url(), '/evaluate')
+            && collect($request['candidates'])->pluck('key')->all() === ['key:phone', 'key:nail-file', 'key:bags']
+            && array_keys(json_decode(json_encode($request['relevance_profile']), true)['niches']) === ['Eletrônicos']);
+
+        $reports = Storage::disk('local')->allFiles('hermes/reports');
+        $saved = json_decode(Storage::disk('local')->get($reports[0]), true);
+        $this->assertSame(['relevant' => 2, 'off_niche' => 1], $saved['report']['relevance']['decisions_by_classification']);
+        $this->assertCount(3, $saved['report']['relevance']['decisions']);
+    }
+
+    public function test_api_discovery_without_profile_does_not_call_the_evaluator(): void
+    {
+        Storage::fake('local');
+        $store = $this->apiStoreReturning([$this->apiCandidate('phone', 'Smartphone Galaxy A36', 'Eletrônicos')]);
+        Tag::query()->update(['relevance_profile' => null]);
+        $this->fakeDiscoveryEndpoints([], []);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id]);
+
+        Http::assertNotSent(fn (HttpRequest $request) => str_ends_with($request->url(), '/evaluate')
+            || str_ends_with($request->url(), '/discovery/candidates/check'));
+        $this->assertCount(1, $this->ingestedCandidates());
+    }
+
+    public function test_api_discovery_fails_closed_for_new_products_when_evaluation_is_unavailable(): void
+    {
+        Storage::fake('local');
+        $store = $this->apiStoreReturning([
+            $this->apiCandidate('phone', 'Smartphone Galaxy A36', 'Eletrônicos'),
+            $this->apiCandidate('known', 'Produto já cadastrado', 'Beleza'),
+        ]);
+        $this->fakeDiscoveryEndpoints(['known'], null);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id]);
+
+        $this->assertSame(['https://shop.example/known'], collect($this->ingestedCandidates())->pluck('url')->all());
+        $saved = json_decode(Storage::disk('local')->get(Storage::disk('local')->allFiles('hermes/reports')[0]), true);
+        $this->assertStringContainsString('relevance evaluation failed', $saved['report']['relevance']['error']);
     }
 
     public function test_edit_form_preserves_and_updates_an_existing_minimum(): void

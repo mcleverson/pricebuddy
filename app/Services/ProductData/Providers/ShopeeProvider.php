@@ -6,10 +6,12 @@ use App\Enums\AccessMode;
 use App\Enums\ProductDataOperation;
 use App\Exceptions\ProductDataAccessException;
 use App\Models\Store;
+use App\Models\Tag;
 use App\Services\ProductData\Providers\Shopee\ShopeeAffiliateClient;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Get;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Shopee Affiliate Open API (GraphQL). Fields/params confirmed against
@@ -41,6 +43,11 @@ class ShopeeProvider extends ConfiguredProvider
     protected const DISCOVERY_SHOP_FANOUT = 5;
 
     protected const DISCOVERY_PRODUCTS_PER_SHOP = 10;
+
+    // How many search terms from a niche's relevance profile to query per run.
+    // Terms rotate across runs, so every term is eventually searched without
+    // multiplying API calls on a single run.
+    protected const DISCOVERY_KEYWORDS_PER_NICHE = 3;
 
     protected const PRODUCT_OFFER_FIELDS = <<<'GRAPHQL'
         nodes {
@@ -176,9 +183,14 @@ class ShopeeProvider extends ConfiguredProvider
         $results = collect();
 
         foreach ($tags as $tag) {
-            $results = $results->merge($this->productsByKeyword($client, $store, $tag, $limit, $minDiscountPercentage, $minSales, $minRating));
+            $keywords = $this->discoveryKeywords($store, $tag);
+            $perKeyword = max(10, (int) ceil($limit / count($keywords)));
 
-            foreach ($this->shopsByKeyword($client, $tag) as $shop) {
+            foreach ($keywords as $keyword) {
+                $results = $results->merge($this->productsByKeyword($client, $store, $keyword, $tag, $perKeyword, $minDiscountPercentage, $minSales, $minRating));
+            }
+
+            foreach ($this->shopsByKeyword($client, $keywords[0]) as $shop) {
                 $shopId = data_get($shop, 'shopId');
 
                 if (! is_numeric($shopId)) {
@@ -202,9 +214,42 @@ class ShopeeProvider extends ConfiguredProvider
     }
 
     /**
+     * Search terms for a niche: its relevance profile's desired product types
+     * and relevant products (e.g. "Smart TVs", "protetor solar") rather than
+     * the niche name itself — a literal "Eletrônicos" search mostly matches
+     * listings that merely stuff the word into their titles. Niches without a
+     * profile keep searching by name. Candidates are always tagged with the
+     * niche, never with the search term.
+     *
+     * @return non-empty-list<string>
+     */
+    protected function discoveryKeywords(Store $store, string $tag): array
+    {
+        /** @var Tag|null $niche */
+        $niche = $store->tags->firstWhere('name', $tag);
+        $profile = (array) $niche?->relevance_profile;
+        $terms = collect([...(array) ($profile['include_product_types'] ?? []), ...(array) ($profile['include_products'] ?? [])])
+            ->filter(fn (mixed $term): bool => is_string($term) && trim($term) !== '')
+            ->map(fn (string $term): string => trim($term))
+            ->unique(fn (string $term): string => mb_strtolower($term))
+            ->values();
+
+        if ($terms->isEmpty()) {
+            return [$tag];
+        }
+
+        $cacheKey = 'shopee:discovery-keyword-offset:'.$store->getKey().':'.md5($tag);
+        $offset = (int) Cache::get($cacheKey, 0) % $terms->count();
+        $count = min(self::DISCOVERY_KEYWORDS_PER_NICHE, $terms->count());
+        Cache::forever($cacheKey, ($offset + $count) % $terms->count());
+
+        return array_map(fn (int $i): string => $terms[($offset + $i) % $terms->count()], range(0, $count - 1));
+    }
+
+    /**
      * @return Collection<int, array<string, mixed>>
      */
-    protected function productsByKeyword(ShopeeAffiliateClient $client, Store $store, string $tag, int $limit, float $minDiscountPercentage, float $minSales, float $minRating): Collection
+    protected function productsByKeyword(ShopeeAffiliateClient $client, Store $store, string $keyword, string $tag, int $limit, float $minDiscountPercentage, float $minSales, float $minRating): Collection
     {
         $query = <<<GRAPHQL
             query DiscoverProducts(\$keyword: String, \$sortType: Int, \$listType: Int, \$limit: Int) {
@@ -215,7 +260,7 @@ class ShopeeProvider extends ConfiguredProvider
             GRAPHQL;
 
         $data = $client->query($query, [
-            'keyword' => $tag,
+            'keyword' => $keyword,
             'sortType' => self::PRODUCT_SORT_SALES,
             'listType' => self::PRODUCT_LIST_TOP_PERFORMANCE,
             'limit' => $limit,
@@ -252,7 +297,7 @@ class ShopeeProvider extends ConfiguredProvider
     /**
      * @return array<int, array<string, mixed>>
      */
-    protected function shopsByKeyword(ShopeeAffiliateClient $client, string $tag): array
+    protected function shopsByKeyword(ShopeeAffiliateClient $client, string $keyword): array
     {
         $query = <<<GRAPHQL
             query DiscoverShops(\$keyword: String, \$sortType: Int, \$limit: Int) {
@@ -263,7 +308,7 @@ class ShopeeProvider extends ConfiguredProvider
             GRAPHQL;
 
         $data = $client->query($query, [
-            'keyword' => $tag,
+            'keyword' => $keyword,
             'sortType' => self::SHOP_SORT_POPULAR,
             'limit' => self::DISCOVERY_SHOP_FANOUT,
         ]);

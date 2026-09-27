@@ -510,7 +510,8 @@ class Agent:
         # Disabled when no profile is configured, preserving the previous flow.
         self.relevance = RelevanceProfile(relevance_profile, self.tags)
         self.relevance_evaluator = (
-            RelevanceEvaluator(self.llm_client, self.relevance) if self.relevance.enabled else None
+            RelevanceEvaluator(self.llm_client, self.relevance, price_parser=_parse_price)
+            if self.relevance.enabled else None
         )
         self.relevance_stats: dict[str, int] = {}
 
@@ -1193,7 +1194,8 @@ class Agent:
         rejected: set[int] = set()
         for (_, candidate), decision in zip(items, decisions):
             candidate.relevance = decision.as_dict()
-            if candidate.tag is None and decision.niche in self.tags:
+            # The evaluation sees the niche profiles, so its niche wins over the listing's pick.
+            if decision.niche in self.tags:
                 candidate.tag = decision.niche
             self.relevance_stats[decision.classification] = self.relevance_stats.get(decision.classification, 0) + 1
             self._record("relevance", url=candidate.url, title=(candidate.title or "")[:120], **decision.as_dict())
@@ -1206,7 +1208,7 @@ class Agent:
         valid, reason = _candidate_meets_minimum_discount(candidate, self.min_discount_percentage)
         if not valid:
             return valid, reason
-        price_reason = self.relevance.price_rejection(_parse_price(candidate.price))
+        price_reason = self.relevance.price_rejection(_parse_price(candidate.price), candidate.tag)
         if price_reason:
             return False, price_reason
         return _candidate_meets_quality_bar(candidate, self.min_rating, self.min_sales)
