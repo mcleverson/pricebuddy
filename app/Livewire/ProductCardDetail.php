@@ -27,6 +27,21 @@ class ProductCardDetail extends Component implements HasActions, HasForms
 
     public bool $showNextCheck = true;
 
+    /**
+     * Redeclared without InteractsWithActions' #[Url] binding. The dashboard renders one
+     * of these per product card, and each URL-bound property costs a history.replaceState
+     * on init; dozens of cards exceed Chromium's navigation rate limit, which then silently
+     * drops clicks on links for ~10s after the page loads. Cards need no ?action= deep link.
+     *
+     * @var mixed
+     */
+    public $defaultAction = null;
+
+    /**
+     * @var mixed
+     */
+    public $defaultActionArguments = null;
+
     public function getRecord(): Product
     {
         return $this->product;
