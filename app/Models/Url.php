@@ -556,12 +556,18 @@ class Url extends Model
 
         $locale = $this->store?->locale ?: 'pt_BR';
         $currency = $this->store?->currency ?: 'BRL';
-        $priceFloat = CurrencyHelper::toFloat($price, locale: $locale, iso: $currency);
+        // Only scraped text ("R$ 1.299,90") is locale-formatted. Prices that are
+        // already numbers (API providers, AI extraction) must not go through the
+        // locale parser: pt_BR reads "12.9" — and 12.9 — as 0.
+        $toFloat = fn (int|float|string $value): float => is_int($value) || is_float($value)
+            ? (float) $value
+            : CurrencyHelper::toFloat($value, locale: $locale, iso: $currency);
+        $priceFloat = $toFloat($price);
         $priceFactor = $this->price_factor ?: 1;
 
         $originalPrice = data_get($scrapeResult, 'original_price');
         $originalPriceFloat = ($originalPrice !== null && $originalPrice !== '')
-            ? CurrencyHelper::toFloat($originalPrice, locale: $locale, iso: $currency)
+            ? $toFloat($originalPrice)
             : null;
 
         return $this->prices()->create([

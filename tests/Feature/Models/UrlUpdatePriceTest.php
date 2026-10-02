@@ -70,6 +70,29 @@ class UrlUpdatePriceTest extends TestCase
         $this->assertSame(9.99, (float) $price->price);
     }
 
+    public function test_numeric_prices_keep_their_decimals(): void
+    {
+        $store = Store::factory()->create(['settings' => ['locale_settings' => ['locale' => 'pt_BR', 'currency' => 'BRL']]]);
+        $url = Url::factory()->for(Product::factory())->for($store)->create();
+
+        // API providers hand over machine-format numbers ("12.9" from Shopee).
+        $price = $url->updatePrice(12.9, ['price' => 12.9, 'original_price' => 18.43, 'availability' => null]);
+
+        $this->assertSame(12.9, (float) $price->price);
+        $this->assertSame(18.43, (float) $price->original_price);
+    }
+
+    public function test_scraped_price_text_is_still_read_with_the_store_locale(): void
+    {
+        $store = Store::factory()->create(['settings' => ['locale_settings' => ['locale' => 'pt_BR', 'currency' => 'BRL']]]);
+        $url = Url::factory()->for(Product::factory())->for($store)->create();
+
+        $price = $url->updatePrice('R$ 1.299,90', ['price' => 'R$ 1.299,90', 'original_price' => '1.499', 'availability' => null]);
+
+        $this->assertSame(1299.9, (float) $price->price);
+        $this->assertSame(1499.0, (float) $price->original_price);
+    }
+
     public function test_no_price_recorded_when_ai_disabled_and_scrape_finds_none(): void
     {
         $this->mock(AiExtractionService::class, fn ($m) => $m->shouldReceive('extract')->never());

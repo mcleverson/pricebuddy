@@ -128,10 +128,13 @@ class ShopeeProvider extends ConfiguredProvider
     protected function fetchProductDetails(Store $store, array $context): array
     {
         $node = $this->fetchOfferNode($store, (string) $context['url']);
+        $price = data_get($node, 'priceMin');
 
         return [
             'title' => data_get($node, 'productName'),
-            'price' => data_get($node, 'priceMin'),
+            // The API sends a machine-format string ("12.9"); hand it over as a
+            // number so it is not read as locale-formatted scraped text.
+            'price' => is_numeric($price) ? (float) $price : null,
             'original_price' => $this->originalPrice($node),
             'image' => data_get($node, 'imageUrl'),
         ];
