@@ -319,6 +319,34 @@ class RunAgentStrategyTest extends TestCase
         $this->assertSame([1, 2], array_column($saved['report']['rounds'], 'created'));
     }
 
+    public function test_api_discovery_drops_a_product_already_admitted_in_an_earlier_round(): void
+    {
+        Storage::fake('local');
+        $store = $this->apiStoreReturning([], ['agent_max_products' => 3], rounds: [
+            [$this->apiCandidate('melu-a', 'Máscara Melu Peel Off Ruby Rose', 'Eletrônicos')],
+            [$this->apiCandidate('melu-b', 'Máscara Para Cílios Melu by Ruby Rose', 'Eletrônicos'),
+                $this->apiCandidate('phone', 'Smartphone Galaxy A36', 'Eletrônicos')],
+            [],
+        ]);
+        $admitted = fn (string $slug, string $productKey): array => [
+            'key' => "key:{$slug}", 'ingest' => true, 'classification' => 'relevant', 'niche' => 'Eletrônicos',
+            'confidence' => 0.9, 'reason' => 'test', 'product_key' => $productKey,
+        ];
+        $this->fakeDiscoveryEndpoints([], [
+            $admitted('melu-a', 'ruby rose|melu|mascara de cilios peel off'),
+            $admitted('melu-b', 'ruby rose|melu|mascara de cilios peel off'),
+            $admitted('phone', 'samsung|galaxy a36|smartphone'),
+        ]);
+
+        $this->artisan('buddy:agent-strategy-run', ['store' => $store->id])->run();
+
+        $this->assertSame(['melu-a', 'phone'], collect($this->ingestedCandidates())->map(fn (array $c) => basename($c['url']))->all());
+        $saved = json_decode(Storage::disk('local')->get(Storage::disk('local')->allFiles('hermes/reports')[0]), true);
+        $duplicate = collect($saved['report']['relevance']['decisions'])->firstWhere('url', 'https://shop.example/melu-b');
+        $this->assertFalse($duplicate['ingest']);
+        $this->assertSame('duplicate product', $duplicate['excluded_reason']);
+    }
+
     public function test_api_discovery_rounds_keep_room_for_a_niche_below_its_floor(): void
     {
         Storage::fake('local');

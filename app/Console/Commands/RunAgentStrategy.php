@@ -369,6 +369,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         $createdPerTag = array_fill_keys($tags->all(), 0);
         $rounds = [];
         $relevance = null;
+        $admittedProductKeys = [];
 
         // Each fetch searches the next terms of every niche's rotation, so when
         // a round falls short of the target (or of a niche's floor), another
@@ -403,7 +404,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
 
             $roundRelevance = null;
             if ($relevanceProfile !== null) {
-                [$candidates, $roundRelevance] = $this->filterByRelevance($candidates, $tags, $relevanceProfile);
+                [$candidates, $roundRelevance] = $this->filterByRelevance($candidates, $tags, $relevanceProfile, $admittedProductKeys);
                 $relevance = $this->mergeRelevanceReports($relevance, $roundRelevance, $round);
             }
 
@@ -470,9 +471,11 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
      * @param  Collection<int, array<string, mixed>>  $candidates
      * @param  Collection<int, string>  $tags
      * @param  array{niches: array<string, array<string, mixed>>, brand_policy?: string}  $profile
+     * @param  array<string, true>  $admittedProductKeys  product_keys admitted by earlier rounds, updated in place
+     *                                                    (Hermes dedupes within one /evaluate request only)
      * @return array{0: Collection<int, array<string, mixed>>, 1: array<string, mixed>}
      */
-    protected function filterByRelevance(Collection $candidates, Collection $tags, array $profile): array
+    protected function filterByRelevance(Collection $candidates, Collection $tags, array $profile, array &$admittedProductKeys = []): array
     {
         $existing = collect();
 
@@ -530,7 +533,20 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             return [$existing->values(), ['enabled' => true, 'error' => $exception->getMessage()]];
         }
 
-        $decisions = $decisions->keyBy('key');
+        $sentKeys = $new->map(fn (array $candidate): string => $keys[$candidate['url']])->flip();
+        $decisions = $decisions->keyBy('key')->map(function (array $decision) use (&$admittedProductKeys, $sentKeys): array {
+            $productKey = $decision['product_key'] ?? null;
+            if (($decision['ingest'] ?? false) !== true || ! is_string($productKey) || $productKey === ''
+                || ! $sentKeys->has($decision['key'] ?? '')) {
+                return $decision;
+            }
+            if (isset($admittedProductKeys[$productKey])) {
+                return [...$decision, 'ingest' => false, 'excluded_reason' => 'duplicate product'];
+            }
+            $admittedProductKeys[$productKey] = true;
+
+            return $decision;
+        });
         $admitted = $new
             ->filter(fn (array $candidate): bool => data_get($decisions->get($keys[$candidate['url']]), 'ingest') === true)
             ->map(function (array $candidate) use ($decisions, $keys, $tags): array {

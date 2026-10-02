@@ -2,16 +2,17 @@
 
 Every rule lives in the relevance profile of a niche (tag), so the same rules
 apply to every store and discovery path (Hermes browsing and marketplace
-APIs via /evaluate). This decides whether a candidate is *admitted*; it never
-scores or ranks: final score, ranking, deduplication and selection belong to
-PriceBuddy's later intelligence layer.
+APIs via /evaluate). This decides whether a candidate is *admitted* (and drops
+later listings of a product already admitted by the same evaluator); it never
+scores or ranks: final score, ranking and selection belong to PriceBuddy's
+later intelligence layer.
 
 Decision flow for one candidate:
   1. deterministic niche rules (excluded terms/brands, price range);
   2. the LLM *describes* the candidate (classification, niche, brand, ...);
-  3. the code admits only `relevant` and `secondary` candidates of the
-     chosen niche with a priority or recognized brand that are not samples
-     (the LLM never decides admission).
+  3. the code admits only genuine `relevant` and `secondary` candidates of
+     the chosen niche with a priority or recognized maker brand that are not
+     samples (the LLM never decides admission).
 
 Pipeline position (see Agent._process_batch):
   collect_page -> deterministic filters (discount/quality) -> known-URL
@@ -26,6 +27,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Callable
 
@@ -75,6 +77,20 @@ BRAND_POLICIES = ("any", "recognized", "priority")
 DEFAULT_BRAND_POLICY = "recognized"
 ADMITTED_BRAND_TIERS = frozenset({"priority", "recognized"})
 
+AUTHENTICITIES = (
+    "genuine",                 # made by the brand it is sold as (or plainly unbranded, not posing as one)
+    "imitation",               # clone/replica/knockoff riding on another brand's name
+    "third_party_compatible",  # third-party product made "for"/compatible with another brand
+    "unclear",                 # not enough information to tell
+)
+# A brand cited in a title is not the product's maker: knockoffs cite the brand
+# by definition, so these never get in, whatever the brand policy.
+REJECTED_AUTHENTICITIES = frozenset({"imitation", "third_party_compatible"})
+
+# Bump when the LLM description contract changes, so cached descriptions made
+# under the old contract are not reused.
+DESCRIPTION_VERSION = 2
+
 MAX_LIST_ITEMS = 100
 MAX_ITEM_CHARS = 200
 MAX_INSTRUCTIONS_CHARS = 2000
@@ -90,8 +106,13 @@ Não faça ranking nem score.
 O perfil de cada nicho NÃO é uma whitelist rígida: reconheça também produtos novos semanticamente relacionados ao que
 ele descreve (tipos, marcas, famílias, sinônimos, exemplos). Marcas prioritárias indicam preferência, não exclusividade.
 
+Uma marca CITADA no título não é necessariamente a FABRICANTE do produto. Imitações citam a marca justamente para
+pegar carona nela ("Mini Vídeo Game Nintendo 400 jogos", "Super Nintendo Mini 620 jogos"), e produtos de terceiros a
+citam por compatibilidade ("Controle para Xbox 360", "capa compatível com iPhone"). Avalie sempre quem FABRICA o item.
+
 Classificações:
-- relevant: produto claramente desejado pelo nicho, de marca prioritária ou amplamente reconhecida no Brasil.
+- relevant: produto claramente desejado pelo nicho, genuíno, fabricado por marca prioritária ou amplamente reconhecida
+  no Brasil.
 - secondary: pertence ao nicho e é aceitável, mas com encaixe mais fraco (marca conhecida não prioritária, modelo de entrada).
 - generic: pertence ao nicho, mas sem marca identificável, de marca desconhecida/de marketplace sem reconhecimento,
   imitação ou réplica de marca conhecida (ex.: "BOOMBOX" sem JBL), título apelativo/cheio de palavras-chave, ou
@@ -106,15 +127,30 @@ lixa elétrica de unha em Beleza) NÃO são accessory.
 
 niche: o nicho configurado ao qual o produto realmente pertence, ou null se nenhum. listing_niche é apenas o nicho de
 onde o item veio (busca ou listagem) e pode estar errado.
-matched_brand: a marca como aparece no título, mesmo que desconhecida (em geral a primeira palavra ou a palavra em
-destaque que não descreve o produto); null somente se o título não tiver marca nenhuma.
-brand_tier (avalie a marca, não a categoria do produto):
-- priority: a marca está nas marcas prioritárias (include_brands) do nicho;
+matched_brand: a marca FABRICANTE como aparece no título, mesmo que desconhecida (em geral a primeira palavra ou a
+palavra em destaque que não descreve o produto); nunca a marca citada apenas por compatibilidade ou imitação. null se o
+título não indicar fabricante nenhum.
+brand_tier (avalie a marca fabricante, não a categoria do produto nem marcas apenas citadas):
+- priority: a fabricante está nas marcas prioritárias (include_brands) do nicho;
 - recognized: marca de circulação nacional ou internacional, conhecida pelo consumidor brasileiro e vendida fora de
   marketplaces (farmácias, supermercados, grandes varejistas, lojas próprias). Ser popular na Shopee/AliExpress não basta;
 - unknown: marca pequena, de marketplace, importada sem reconhecimento ou sem apelo comercial;
 - none: sem marca no título.
 Na dúvida entre recognized e unknown, use unknown.
+authenticity:
+- genuine: o item é da marca com que é vendido (ou é simplesmente sem marca, sem se passar por outra);
+- imitation: clone, réplica ou "inspirado" que usa o nome de outra marca. Sinais: marca famosa junto de quantidade de
+  jogos embutidos ("400 jogos", "620 jogos"), "mini"/"retrô" de console famoso, "tipo", "estilo", "inspirado", "1ª linha",
+  vendedor/loja no lugar da fabricante, preço incompatível com o original;
+- third_party_compatible: produto de terceiros feito "para" ou "compatível com" outra marca (controle para Xbox, cabo
+  para iPhone, refil compatível);
+- unclear: não dá para saber.
+Na dúvida entre genuine e imitation quando o título cita marca famosa, use unclear.
+product_key: identidade canônica do produto, para reconhecer o MESMO produto anunciado por vendedores diferentes.
+Formato "fabricante|linha ou modelo|tipo de produto", em minúsculas (ex.: "ruby rose|melu|mascara de cilios peel off",
+"motorola|moto g06|smartphone", "natura|tododia|kit 3 hidratantes corporais"). Mantenha o que muda o produto (modelo,
+armazenamento, tamanho do kit); ignore vendedor, cor, fragrância, código de anúncio e palavras de marketing. null quando
+não houver informação suficiente.
 sample: true quando o item é amostra, sachê, miniatura ou tamanho de teste (ex.: 1 ml).
 Respeite as instruções de cada nicho (instructions) quando não conflitarem com estas regras.
 
@@ -154,12 +190,34 @@ def _clean_niche(raw: Any) -> dict[str, Any]:
     return niche
 
 
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'"})
+
+
+def _fold(text: str) -> str:
+    """Case-, accent- and apostrophe-insensitive form ("L’Oréal" == "l'oreal")."""
+    decomposed = unicodedata.normalize("NFKD", text.translate(_APOSTROPHES))
+    return "".join(char for char in decomposed if not unicodedata.combining(char)).casefold()
+
+
 def _contains_term(text: str, term: str) -> bool:
-    """Whole-word, case-insensitive match (so "capa" does not match "capacidade")."""
-    term = term.strip()
+    """Whole-word, case/accent/apostrophe-insensitive match (so "capa" does not match "capacidade")."""
+    term = _fold(term.strip())
     if not term:
         return False
-    return re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text, re.IGNORECASE) is not None
+    return re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", _fold(text)) is not None
+
+
+def _same_brand(maker: str, brand: str) -> bool:
+    """`brand` names `maker`, also when spelled together or hyphenated ("Rubyrose" == "Ruby Rose")."""
+    compact = lambda value: re.sub(r"[\s\-.]+", "", _fold(value))  # noqa: E731
+    return _contains_term(maker, brand) or (bool(compact(brand)) and compact(maker) == compact(brand))
+
+
+def _product_key(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    key = " ".join(_fold(value).split())[:MAX_ITEM_CHARS]
+    return key or None
 
 
 def _default_price(value: Any) -> float | None:
@@ -186,6 +244,9 @@ class RelevanceDecision:
     matched_brand: str | None = None
     brand_tier: str | None = None
     sample: bool | None = None
+    authenticity: str | None = None
+    product_key: str | None = None
+    """Canonical identity of the product, shared by its listings from different sellers."""
     normalized_product_type: str | None = None
     excluded_reason: str | None = None
     source: str = "llm"
@@ -219,7 +280,10 @@ class RelevanceProfile:
     def fingerprint(self) -> str:
         # The brand policy only affects admission, which is recomputed from cached
         # descriptions, so it is deliberately not part of the cache key.
-        canonical = json.dumps({"niches": self.niches, "tags": self.tags}, sort_keys=True, ensure_ascii=False)
+        canonical = json.dumps(
+            {"niches": self.niches, "tags": self.tags, "description_version": DESCRIPTION_VERSION},
+            sort_keys=True, ensure_ascii=False,
+        )
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     def niche_rules(self, niche: str | None) -> dict[str, Any] | None:
@@ -267,19 +331,21 @@ class RelevanceProfile:
         return None
 
     def admit(self, decision: RelevanceDecision, title: str, min_confidence: float) -> RelevanceDecision:
-        """Admit relevant/secondary descriptions (plus generic ones under the
-        "any" brand policy) with enough confidence, a brand allowed by the
+        """Admit genuine relevant/secondary descriptions (plus generic ones under
+        the "any" brand policy) with enough confidence, a brand allowed by the
         store's brand policy, and that are not samples."""
-        # A priority brand written in the title (or extracted by the LLM) is
-        # matched by the code; the LLM's own "priority" tier is not trusted alone.
+        # The priority tier is matched by the code against the *maker* the LLM
+        # extracted, never against the whole title: knockoffs and "for Xbox"
+        # products cite priority brands they are not made by. The LLM's own
+        # "priority" tier is not trusted alone either.
         rules = self.niche_rules(decision.niche) or {}
         priority = next(
             (brand for brand in rules.get("include_brands", [])
-             if _contains_term(title, brand) or (decision.matched_brand and _contains_term(decision.matched_brand, brand))),
+             if decision.matched_brand and _same_brand(decision.matched_brand, brand)),
             None,
         )
         if priority is not None:
-            decision = replace(decision, brand_tier="priority", matched_brand=decision.matched_brand or priority)
+            decision = replace(decision, brand_tier="priority")
         elif decision.brand_tier == "priority":
             decision = replace(decision, brand_tier="recognized")
 
@@ -292,6 +358,11 @@ class RelevanceProfile:
         if decision.confidence < min_confidence:
             return replace(decision, ingest=False,
                            excluded_reason=f"confidence {decision.confidence:.2f} below {min_confidence:.2f}")
+        if decision.authenticity in REJECTED_AUTHENTICITIES:
+            return replace(decision, ingest=False, excluded_reason=f"authenticity: {decision.authenticity}")
+        if self.brand_policy == "priority" and decision.authenticity != "genuine":
+            return replace(decision, ingest=False,
+                           excluded_reason=f"authenticity: {decision.authenticity or 'unclear'} under priority policy")
         if self.brand_policy == "priority" and decision.brand_tier != "priority":
             return replace(decision, ingest=False, excluded_reason="brand: not a priority brand")
         if self.brand_policy == "recognized" and decision.brand_tier not in ADMITTED_BRAND_TIERS:
@@ -326,12 +397,15 @@ def _evaluate_schema(tags: list[str]) -> list[dict]:
                                 "matched_brand": nullable_str,
                                 "brand_tier": {"type": "string", "enum": list(BRAND_TIERS)},
                                 "sample": {"type": "boolean"},
+                                "authenticity": {"type": "string", "enum": list(AUTHENTICITIES)},
+                                "product_key": nullable_str,
                                 "normalized_product_type": nullable_str,
                                 "excluded_reason": nullable_str,
                                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                                 "reason": {"type": "string"},
                             },
-                            "required": ["index", "classification", "brand_tier", "sample", "confidence", "reason"],
+                            "required": ["index", "classification", "brand_tier", "sample", "authenticity",
+                                         "confidence", "reason"],
                             "additionalProperties": False,
                         },
                     },
@@ -367,6 +441,7 @@ def parse_decisions(arguments: dict[str, Any], count: int, tags: list[str]) -> d
                 or classification not in CLASSIFICATIONS
                 or item.get("brand_tier") not in BRAND_TIERS
                 or not isinstance(item.get("sample"), bool)
+                or item.get("authenticity") not in AUTHENTICITIES
                 or isinstance(confidence, bool) or not isinstance(confidence, (int, float))
                 or not 0 <= confidence <= 1):
             continue
@@ -380,6 +455,8 @@ def parse_decisions(arguments: dict[str, Any], count: int, tags: list[str]) -> d
             matched_brand=_optional_text(item.get("matched_brand")),
             brand_tier=item["brand_tier"],
             sample=item["sample"],
+            authenticity=item["authenticity"],
+            product_key=_product_key(item.get("product_key")),
             normalized_product_type=_optional_text(item.get("normalized_product_type")),
             excluded_reason=_optional_text(item.get("excluded_reason")),
             source="llm",
@@ -438,6 +515,9 @@ class RelevanceEvaluator:
         self.min_confidence = min_confidence
         self.price_parser = price_parser
         self._schema = _evaluate_schema(profile.tags)
+        # product_keys admitted by this evaluator (one Hermes run, or one
+        # /evaluate request): later listings of the same product are dropped.
+        self._admitted_product_keys: set[str] = set()
 
     def evaluate(self, items: list[tuple[str, Any]], timeout_seconds: float) -> list[RelevanceDecision]:
         """`items` are (normalized key, ProductCandidate). Returns one decision per item, in order."""
@@ -482,6 +562,16 @@ class RelevanceEvaluator:
             if niche != candidate.tag:
                 rule = self.profile.rule_decision(candidate.title or "", niche, self.price_parser(candidate.price))
             decisions[position] = rule or self.profile.admit(description, candidate.title or "", self.min_confidence)
+
+        # Keep the first listing of each product (input order: providers list
+        # best sellers first); the rest are the same product from other sellers.
+        for position, decision in enumerate(decisions):
+            if decision is None or not decision.ingest or not decision.product_key:
+                continue
+            if decision.product_key in self._admitted_product_keys:
+                decisions[position] = replace(decision, ingest=False, excluded_reason="duplicate product")
+            else:
+                self._admitted_product_keys.add(decision.product_key)
 
         return [decision for decision in decisions if decision is not None]
 

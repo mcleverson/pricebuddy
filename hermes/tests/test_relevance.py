@@ -34,12 +34,13 @@ def candidate(title, tag=None, price='100.00', original_price='200.00'):
 
 def described(index, classification='relevant', confidence=0.9, **extra):
     return {'index': index, 'classification': classification, 'confidence': confidence, 'reason': 'test',
-            'brand_tier': 'recognized', 'sample': False, **extra}
+            'brand_tier': 'recognized', 'sample': False, 'authenticity': 'genuine', **extra}
 
 
 def description(classification='relevant', confidence=0.9, **extra):
     return RelevanceDecision(ingest=False, classification=classification, confidence=confidence,
-                             reason='test', **{'brand_tier': 'recognized', 'sample': False, **extra})
+                             reason='test', **{'brand_tier': 'recognized', 'sample': False,
+                                               'authenticity': 'genuine', **extra})
 
 
 class RelevanceProfileTest(unittest.TestCase):
@@ -102,12 +103,42 @@ class AdmissionTest(unittest.TestCase):
             self.assertEqual(decision.excluded_reason, f"brand: {tier or 'unknown'}")
         self.assertTrue(p.admit(description('secondary', niche='Celulares', brand_tier='priority'), 'x', 0.5).ingest)
 
-    def test_a_priority_brand_in_the_title_overrides_a_wrong_extraction(self):
-        decision = profile().admit(description('relevant', niche='Celulares', brand_tier='none'),
-                                   'Smartphone Samsung Galaxy A15', 0.5)
+    def test_the_priority_tier_comes_from_the_maker_not_from_a_brand_cited_in_the_title(self):
+        made_by = profile().admit(description('relevant', niche='Celulares', brand_tier='none', matched_brand='Samsung'),
+                                  'Smartphone Samsung Galaxy A15', 0.5)
+        cited = profile().admit(description('relevant', niche='Celulares', brand_tier='none', matched_brand='Kaidi'),
+                                'Capinha estilo Samsung Galaxy', 0.5)
 
-        self.assertTrue(decision.ingest)
-        self.assertEqual((decision.brand_tier, decision.matched_brand), ('priority', 'Samsung'))
+        self.assertEqual((made_by.ingest, made_by.brand_tier), (True, 'priority'))
+        self.assertEqual((cited.ingest, cited.brand_tier), (False, 'none'))
+
+    def test_brands_match_regardless_of_accents_apostrophes_and_spacing(self):
+        p = profile({'Beleza': {'include_brands': ['Ruby Rose', "L'Oréal"]}}, tags=('Beleza',))
+
+        for maker in ('Rubyrose', 'Melu by Ruby Rose', 'Ruby-Rose', 'L’Oreal Paris'):
+            decision = p.admit(description('relevant', niche='Beleza', brand_tier='unknown', matched_brand=maker), 'x', 0.5)
+            self.assertEqual(decision.brand_tier, 'priority', maker)
+        self.assertEqual(p.admit(description('relevant', niche='Beleza', brand_tier='unknown', matched_brand='Rosebud'),
+                                 'x', 0.5).brand_tier, 'unknown')
+
+    def test_imitations_and_third_party_compatibles_are_never_admitted(self):
+        for policy in ('any', 'recognized', 'priority'):
+            p = RelevanceProfile({'niches': {'Games': {'include_brands': ['Nintendo']}}, 'brand_policy': policy}, ['Games'])
+            for authenticity in ('imitation', 'third_party_compatible'):
+                decision = p.admit(description('relevant', niche='Games', matched_brand='Nintendo',
+                                               authenticity=authenticity), 'Mini Vídeo Game Nintendo 400 Jogos', 0.5)
+                self.assertFalse(decision.ingest)
+                self.assertEqual(decision.excluded_reason, f'authenticity: {authenticity}')
+
+    def test_unclear_authenticity_is_only_rejected_under_the_priority_policy(self):
+        def admit(policy):
+            p = RelevanceProfile({'niches': {'Celulares': {'include_brands': ['Samsung']}}, 'brand_policy': policy},
+                                 ['Celulares'])
+            return p.admit(description('relevant', niche='Celulares', matched_brand='Samsung', authenticity='unclear'),
+                           'Galaxy A15', 0.5)
+
+        self.assertTrue(admit('recognized').ingest)
+        self.assertFalse(admit('priority').ingest)
 
     def test_samples_are_never_admitted(self):
         decision = profile().admit(description('relevant', niche='Celulares', sample=True), 'Kit de Sachês', 0.5)
@@ -140,7 +171,9 @@ class BrandPolicyTest(unittest.TestCase):
         self.assertTrue(self.admit('recognized', 'Smartphone Motorola', brand_tier='recognized').ingest)
 
     def test_priority_only_admits_brands_matched_by_the_code(self):
-        self.assertTrue(self.admit('priority', 'Smartphone Samsung Galaxy A15', brand_tier='none').ingest)
+        self.assertTrue(self.admit('priority', 'Smartphone Samsung Galaxy A15', matched_brand='Samsung',
+                                   brand_tier='none').ingest)
+        self.assertFalse(self.admit('priority', 'Smartphone Samsung Galaxy A15', brand_tier='none').ingest)
         self.assertTrue(self.admit('priority', 'iPhone 15', matched_brand='Apple', brand_tier='recognized').ingest)
         rejected = self.admit('priority', 'Smartphone Motorola G84', matched_brand='Motorola', brand_tier='priority')
         self.assertFalse(rejected.ingest)
@@ -158,6 +191,7 @@ class ParseDecisionsTest(unittest.TestCase):
             described(3, niche='Unknown'),
             {**described(1), 'brand_tier': 'famous'},
             {**described(2), 'sample': 'no'},
+            {**described(2), 'authenticity': 'fake'},
         ]}, count=4, tags=['Celulares'])
 
         self.assertEqual(sorted(decisions), [0, 3])
@@ -165,6 +199,15 @@ class ParseDecisionsTest(unittest.TestCase):
         self.assertFalse(decisions[0].ingest)
         self.assertEqual(decisions[0].niche, 'Celulares')
         self.assertIsNone(decisions[3].niche)
+
+    def test_product_key_is_normalized(self):
+        decisions = parse_decisions({'decisions': [
+            described(0, product_key='  Ruby Rose|Melu|Máscara  de Cílios '),
+            described(1, product_key=' '),
+        ]}, count=2, tags=['Celulares'])
+
+        self.assertEqual(decisions[0].product_key, 'ruby rose|melu|mascara de cilios')
+        self.assertIsNone(decisions[1].product_key)
 
 
 class RelevanceEvaluatorTest(unittest.TestCase):
@@ -219,6 +262,29 @@ class RelevanceEvaluatorTest(unittest.TestCase):
         self.assertTrue(result[0].ingest)
         self.assertFalse(result[1].ingest)
         self.assertEqual(result[1].source, 'error')
+
+    def test_later_listings_of_an_admitted_product_are_dropped_across_calls(self):
+        llm = Mock()
+        llm.chat_completion.side_effect = [
+            ToolCall('evaluate_candidates', {'decisions': [
+                described(0, matched_brand='Samsung', product_key='samsung|galaxy a15|smartphone'),
+                described(1, matched_brand='Samsung', product_key='samsung|galaxy a15|smartphone'),
+                described(2, matched_brand='Samsung'),
+                described(3, matched_brand='Samsung'),
+            ]}),
+            ToolCall('evaluate_candidates', {'decisions': [
+                described(0, matched_brand='Samsung', product_key='Samsung|Galaxy A15|Smartphone'),
+            ]}),
+        ]
+        evaluator = self.evaluator(llm)
+
+        first = evaluator.evaluate([('k0', candidate('Galaxy A15 loja A')), ('k1', candidate('Galaxy A15 loja B')),
+                                    ('k2', candidate('Galaxy A25')), ('k3', candidate('Galaxy A35'))], timeout_seconds=30)
+        second = evaluator.evaluate([('k4', candidate('Galaxy A15 loja C'))], timeout_seconds=30)
+
+        self.assertEqual([d.ingest for d in first], [True, False, True, True])
+        self.assertEqual(first[1].excluded_reason, 'duplicate product')
+        self.assertFalse(second[0].ingest)
 
     def test_llm_failure_fails_closed(self):
         llm = Mock()
