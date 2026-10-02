@@ -74,3 +74,13 @@ Example diagnostic shape:
 ```
 
 The stock upstream image is intentionally not modified in place; deployments should use the Compose-built image so the PriceBuddy proxy pool reaches SeleniumBase `Driver`.
+
+## Hermes (agentic) proxy
+
+Hermes does not use the proxy pool above. The Laravel `/discover` payload carries no proxy, so `SCRAPER_PROXY_*` settings never reach the agent browser.
+
+Hermes has its own single, fixed proxy, read from `HERMES_HTTP_PROXY` (`hermes/src/config.py`) and applied as the Playwright context proxy. It has no rotation, health tracking, cooldown or per-Store `proxy_mode`. Leave it empty to browse directly.
+
+```dotenv
+HERMES_HTTP_PROXY=http://user:password@proxy.example:8080
+```
