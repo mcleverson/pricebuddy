@@ -89,7 +89,9 @@ class Product extends Model
     public static function booted()
     {
         static::deleted(function (Product $product) {
-            // Delete all related urls, should cascade to prices.
+            // A mass delete skips the Url deleted event and prices.url_id has no
+            // cascading foreign key, so remove the prices explicitly first.
+            Price::whereIn('url_id', $product->urls()->select('id'))->delete();
             $product->urls()->delete();
         });
 
