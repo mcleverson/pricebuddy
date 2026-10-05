@@ -2,11 +2,13 @@
 
 namespace App\Actions;
 
+use App\Models\Coupon;
 use App\Models\Price;
 use App\Models\Product;
 use App\Models\Tag;
 use App\Models\Url;
 use App\Services\ScrapeUrl;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -88,6 +90,10 @@ class IngestProductCandidateAction
             // Attach tags/niche if provided (e.g., "eletronicos").
             $this->syncTags($product, $candidate['tags'] ?? []);
 
+            if (! empty($candidate['coupon'])) {
+                $this->createCoupon($product, $urlModel, $candidate['coupon']);
+            }
+
             return [
                 'product' => $product->fresh(),
                 'url' => $urlModel,
@@ -96,6 +102,42 @@ class IngestProductCandidateAction
                 'conflict' => false,
             ];
         });
+    }
+
+    /**
+     * Store a coupon seen on the product page as a product-scoped coupon; its
+     * niches are the product's own.
+     *
+     * @param  array<string, mixed>  $coupon
+     */
+    private function createCoupon(Product $product, Url $url, array $coupon): void
+    {
+        $validUntil = filled($coupon['valid_until'] ?? null) ? Carbon::parse($coupon['valid_until']) : null;
+
+        $model = Coupon::updateOrCreate([
+            'store_id' => $url->store_id,
+            'source' => Coupon::SOURCE_PRODUCT_PAGE,
+            'fingerprint' => hash('sha256', 'product:'.$product->id.'|'.Str::lower(Str::squish(
+                ($coupon['code'] ?? '').'|'.$coupon['title'].'|'.$coupon['discount_type'].'|'.($coupon['discount_value'] ?? '')
+            ))),
+        ], [
+            'product_id' => $product->id,
+            'scope' => Coupon::SCOPE_PRODUCT,
+            'code' => $coupon['code'] ?? null,
+            'title' => $coupon['title'],
+            'discount_type' => $coupon['discount_type'],
+            'discount_value' => $coupon['discount_value'] ?? null,
+            'minimum_order_value' => $coupon['minimum_order_value'] ?? null,
+            'valid_until' => $validUntil,
+            'activation_url' => $url->url,
+            'restrictions' => array_values((array) ($coupon['restrictions'] ?? [])),
+            'status' => $validUntil !== null && $validUntil->endOfDay()->isPast() ? Coupon::STATUS_EXPIRED : Coupon::STATUS_ACTIVE,
+            'confidence' => $coupon['confidence'] ?? null,
+            'source_url' => $url->url,
+            'evidence' => $coupon['evidence'],
+            'last_seen_at' => now(),
+        ]);
+        $model->tags()->sync($product->tags()->pluck('tags.id')->all());
     }
 
     /**

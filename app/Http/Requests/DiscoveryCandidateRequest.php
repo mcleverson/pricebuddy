@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Coupon;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -40,6 +41,20 @@ class DiscoveryCandidateRequest extends FormRequest
             // Accepts an array of tag IDs or tag names (strings).
             'tags' => ['sometimes', 'nullable', 'array'],
             'tags.*' => ['sometimes', 'nullable', 'string'],
+
+            // A coupon shown on the product page itself (e.g. Amazon's "Resgatar
+            // cupom"), stored as a product-scoped coupon of this store.
+            'coupon' => ['sometimes', 'nullable', 'array'],
+            'coupon.title' => ['required_with:coupon', 'string', 'max:300'],
+            'coupon.code' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'coupon.discount_type' => ['required_with:coupon', Rule::in(Coupon::DISCOUNT_TYPES)],
+            'coupon.discount_value' => ['sometimes', 'nullable', 'numeric', 'min:0', 'max:99999999'],
+            'coupon.minimum_order_value' => ['sometimes', 'nullable', 'numeric', 'min:0', 'max:99999999'],
+            'coupon.valid_until' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'coupon.restrictions' => ['sometimes', 'array'],
+            'coupon.restrictions.*' => ['string', 'max:300'],
+            'coupon.evidence' => ['required_with:coupon', 'string', 'max:2000'],
+            'coupon.confidence' => ['sometimes', 'nullable', 'numeric', 'between:0,1'],
 
             // Accepted for forward compatibility with external discovery clients.
             // The current schema has no fields for these values, so they are not persisted yet.

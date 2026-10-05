@@ -268,6 +268,14 @@ class Product extends Model
         );
     }
 
+    /**
+     * Coupons tied to this product (e.g. read from its product page).
+     */
+    public function coupons(): HasMany
+    {
+        return $this->hasMany(Coupon::class);
+    }
+
     public function tags(): MorphToMany
     {
         return $this->morphToMany(Tag::class, 'taggable');

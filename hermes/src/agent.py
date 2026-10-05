@@ -15,6 +15,7 @@ import re
 import signal
 import sys
 import time
+from datetime import date
 from typing import Any
 
 import requests
@@ -160,6 +161,58 @@ PRODUCT_METADATA_SCHEMA = [{
         },
     },
 }]
+
+
+PRODUCT_COUPON_SCHEMA = [{
+    "type": "function",
+    "function": {
+        "name": "report_product_coupon",
+        "description": "Report the coupon offered for the main product of this page, if one is visible.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "has_coupon": {"type": "boolean"},
+                "title": {"type": ["string", "null"]},
+                "code": {"type": ["string", "null"]},
+                "discount_type": {"type": ["string", "null"], "enum": ["percentage", "fixed", "free_shipping", "other", None]},
+                "discount_value": {"type": ["number", "null"]},
+                "minimum_order_value": {"type": ["number", "null"]},
+                "valid_until": {"type": ["string", "null"]},
+                "restrictions": {"type": "array", "items": {"type": "string"}},
+                "evidence": {"type": ["string", "null"]},
+                "confidence": {"type": ["number", "null"]},
+                "other_promotions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}, "code": {"type": ["string", "null"]}},
+                        "required": ["title"],
+                    },
+                },
+            },
+            "required": ["has_coupon", "other_promotions"],
+            "additionalProperties": False,
+        },
+    },
+}]
+
+# Visible-text windows around coupon mentions; keeps the LLM payload small.
+COUPON_MENTION = re.compile(r"cupo[mn]|coupon", re.IGNORECASE)
+COUPON_WINDOW_CHARS = 700
+COUPON_MAX_CHARS = 4000
+
+
+def _coupon_excerpt(visible_text: str) -> str:
+    """Join the visible-text passages that mention a coupon, merged and bounded."""
+    spans: list[list[int]] = []
+    for match in COUPON_MENTION.finditer(visible_text):
+        start = max(0, match.start() - COUPON_WINDOW_CHARS)
+        end = min(len(visible_text), match.end() + COUPON_WINDOW_CHARS)
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    return "\n[...]\n".join(visible_text[start:end] for start, end in spans)[:COUPON_MAX_CHARS]
 
 
 def _parse_price(value: str | None) -> float | None:
@@ -386,6 +439,8 @@ def send_candidates_to_pricebuddy(
             "image": candidate.image_url,
             "store_id": config.HERMES_STORE_ID if store_id is None else store_id, "tags": tags or [],
         }
+        if candidate.coupon:
+            payload["coupon"] = candidate.coupon
         try:
             response = requests.post(
                 config.PRICEBUDDY_API_BASE_URL.rstrip("/") + "/discovery/candidates",
@@ -494,6 +549,7 @@ class Agent:
         self.browser_options = browser_options or {}
         self.require_image = self.browser_options.get("require_image") is True
         self.listing_image_enrichment = self.browser_options.get("listing_image_enrichment") is True
+        self.product_page_coupons = self.browser_options.get("product_page_coupons") is True
         segment_chars = self.browser_options.get(
             "llm_page_segment_chars", config.LLM_PAGE_SEGMENT_CHARS,
         )
@@ -595,6 +651,7 @@ class Agent:
                         BrowserGuard(self.allowed_hosts),
                         candidate_validator=self._validate_candidate,
                         metadata_resolver=self._resolve_product_metadata_with_llm,
+                        coupon_resolver=self._resolve_product_coupon_with_llm if self.product_page_coupons else None,
                         image_exclude_patterns=self.image_exclude_patterns,
                         offer_query_params=self.offer_query_params,
                     )
@@ -744,6 +801,83 @@ class Agent:
         if isinstance(original_price, str) and original_price.strip():
             result["original_price"] = original_price.strip()
         return result
+
+    def _resolve_product_coupon_with_llm(self, url: str, visible_text: str) -> dict[str, Any] | None:
+        """Read the main product's coupon from the passages that mention one; None when there is none."""
+        excerpt = _coupon_excerpt(visible_text)
+        if not excerpt:
+            logging.info("Product page coupon: no coupon mention — %s", url)
+            return None
+        messages = [{
+            "role": "system",
+            "content": (
+                "Leia trechos do texto visível de uma página de produto e retorne uma chamada "
+                "report_product_coupon. Informe has_coupon=true somente se houver um cupom para o "
+                "produto principal: uma caixa \"Resgatar cupom\"/\"Aplicar cupom\", ou um código "
+                "promocional para usar no pagamento. Ignore cupons de produtos relacionados, "
+                "patrocinados ou de outros vendedores, e menções genéricas (ex: \"ver cupons\"). "
+                "A página pode ter várias promoções: nunca junte informações de promoções diferentes — "
+                "código, valor e condições devem vir do mesmo bloco do cupom do produto. Ignore promoções "
+                "gerais da loja que não são do produto (ex: primeira compra no app, cartão de crédito, "
+                "frete grátis no primeiro pedido): liste-as em other_promotions, nunca no cupom. "
+                "code: somente o código exato a digitar, como escrito na página; null se o cupom não tiver código. "
+                "Reporte apenas o que está escrito; nunca invente código, valor ou condição — use null. "
+                "discount_type: percentage (ex: 10%), fixed (ex: R$ 20), free_shipping ou other; "
+                "discount_value e minimum_order_value como números. valid_until como AAAA-MM-DD "
+                "somente com data explícita. restrictions: condições escritas (ex: somente Prime, "
+                "vendido e entregue pela loja, primeira compra, um cupom por pedido). title: o texto "
+                "curto do cupom (ex: \"Economize 10% com cupom\"). evidence: o trecho que comprova o "
+                "cupom. confidence de 0 a 1."
+            ),
+        }, {
+            "role": "user",
+            "content": json.dumps({"url": url, "text": excerpt}, ensure_ascii=False),
+        }]
+        call = self.llm_client.chat_completion(
+            messages,
+            PRODUCT_COUPON_SCHEMA,
+            timeout_seconds=min(60, self.remaining_seconds()),
+            tool_choice={"type": "function", "function": {"name": "report_product_coupon"}},
+        )
+        args = call.arguments if call.name == "report_product_coupon" else {}
+        title = args.get("title")
+        evidence = args.get("evidence")
+        if args.get("has_coupon") is not True or not isinstance(title, str) or not title.strip() \
+                or not isinstance(evidence, str) or not evidence.strip():
+            logging.info("Product page coupon: none for the main product — %s", url)
+            return None
+
+        def number(value: Any) -> float | None:
+            return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
+
+        valid_until = args.get("valid_until")
+        try:
+            valid_until = date.fromisoformat(valid_until).isoformat() if isinstance(valid_until, str) else None
+        except ValueError:
+            valid_until = None
+        # A code is accepted only when it is a single token written on the page
+        # and does not belong to one of the page's general promotions.
+        other_codes = {
+            str(promo.get("code")).strip().upper() for promo in args.get("other_promotions") or []
+            if isinstance(promo, dict) and isinstance(promo.get("code"), str)
+        }
+        code = args.get("code").strip() if isinstance(args.get("code"), str) else ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", code) or code not in excerpt or code.upper() in other_codes:
+            code = ""
+        confidence = number(args.get("confidence"))
+        coupon = {
+            "title": " ".join(title.split())[:300],
+            "code": code or None,
+            "discount_type": args.get("discount_type") if args.get("discount_type") in ("percentage", "fixed", "free_shipping", "other") else "other",
+            "discount_value": number(args.get("discount_value")),
+            "minimum_order_value": number(args.get("minimum_order_value")),
+            "valid_until": valid_until,
+            "restrictions": [" ".join(item.split())[:300] for item in args.get("restrictions") or [] if isinstance(item, str) and item.strip()],
+            "evidence": " ".join(evidence.split())[:2000],
+            "confidence": min(confidence, 1.0) if confidence is not None else None,
+        }
+        logging.info("Product page coupon found: %s — %s", coupon["title"], url)
+        return coupon
 
     def _collect_page(self, snapshot: dict, metadata_tools: BrowserToolSet) -> dict:
         """Read all text segments; never stop halfway through a page merely because the target was reached."""

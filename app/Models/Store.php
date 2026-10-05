@@ -63,6 +63,7 @@ class Store extends Model
         'stealth_script',
         'listing_image_enrichment',
         'require_image',
+        'product_page_coupons',
     ];
 
     public const array AGENT_INTEGER_OPTIONS = [
@@ -150,6 +151,11 @@ class Store extends Model
     public function urls(): HasMany
     {
         return $this->hasMany(Url::class);
+    }
+
+    public function coupons(): HasMany
+    {
+        return $this->hasMany(Coupon::class);
     }
 
     public function tags(): BelongsToMany

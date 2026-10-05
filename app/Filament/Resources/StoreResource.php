@@ -405,6 +405,7 @@ class StoreResource extends Resource
             $yesNo('stealth_script', 'Stealth script', 'Injects the anti-automation-detection script. Some marketplaces block pages when it is present.'),
             $yesNo('listing_image_enrichment', 'Image from listing', 'Yes takes the product image (and keeps the price) from the listing page and skips opening the product page. Only has effect on marketplaces with listing image extraction (currently Mercado Livre).'),
             $yesNo('require_image', 'Require image', 'Yes discards candidates without an image instead of saving them incomplete.'),
+            $yesNo('product_page_coupons', 'Coupons on product page', 'Yes reads the coupon shown on each product page (e.g. Amazon\'s "Resgatar cupom") and stores it with the product. Only for products whose page Hermes opens.'),
 
             TextInput::make('llm_page_segment_chars')
                 ->label('Page segment size (chars)')

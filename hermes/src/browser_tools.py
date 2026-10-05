@@ -51,6 +51,10 @@ class ProductCandidate:
     label (loja oficial, vendido pela {marketplace}, MercadoLíder
     Platinum/Gold, etc). Listing-only, and null (not False) when no such
     label is visible — the LLM is instructed never to infer this."""
+    coupon: dict[str, Any] | None = None
+    """Coupon shown on the product page itself (e.g. Amazon's "Resgatar
+    cupom"), read by the LLM from visible text when the store enables
+    product_page_coupons. Only what is written on the page; never inferred."""
     relevance: dict[str, Any] | None = None
     """Admission decision from the strategy's relevance profile, when one is
     configured (see relevance.py). Kept for the run report / debugging."""
@@ -83,6 +87,7 @@ class BrowserToolSet:
         guard: BrowserGuard,
         candidate_validator: Callable[[ProductCandidate], tuple[bool, str]] | None = None,
         metadata_resolver: Callable[[str, str], dict[str, Any]] | None = None,
+        coupon_resolver: Callable[[str, str], dict[str, Any] | None] | None = None,
         target_candidates: int | None = None,
         required_urls: list[str] | None = None,
         image_exclude_patterns: list[str] | None = None,
@@ -92,6 +97,7 @@ class BrowserToolSet:
         self.guard = guard
         self.candidate_validator = candidate_validator
         self.metadata_resolver = metadata_resolver
+        self.coupon_resolver = coupon_resolver
         self.target_candidates = target_candidates
         self.required_urls = required_urls or []
         # Store-configured extras, added on top of the built-in filters.
@@ -386,9 +392,9 @@ class BrowserToolSet:
                 bool(metadata.get("image")), len(accessible_images),
             )
             visible_text = ""
-            if self.metadata_resolver is not None and (
+            if self.coupon_resolver is not None or (self.metadata_resolver is not None and (
                 not metadata.get("price") or not metadata.get("original_price")
-            ):
+            )):
                 visible_text = self.page.evaluate("() => document.body.innerText") or ""
 
             return BrowserToolResult(
@@ -807,6 +813,11 @@ class BrowserToolSet:
                             candidate.rating = str(data["rating"])
                         if data.get("rating_count") and not candidate.rating_count:
                             candidate.rating_count = str(data["rating_count"])
+                        if self.coupon_resolver is not None and data.get("visible_text"):
+                            try:
+                                candidate.coupon = self.coupon_resolver(candidate.url, data["visible_text"])
+                            except Exception as exc:
+                                logger.warning("Product page coupon reading failed for %s: %s", candidate.url, exc)
             except Exception as exc:
                 candidate.metadata_checked = True
                 logger.warning("Failed to enrich candidate %s: %s", candidate.url, exc)
