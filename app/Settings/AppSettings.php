@@ -32,6 +32,12 @@ class AppSettings extends Settings
 
     public array $default_locale_settings = [];
 
+    /**
+     * Read by pricebuddy-intelligence through GET /api/intelligence/settings.
+     * telegram_bot_token is stored encrypted.
+     */
+    public array $intelligence_settings = [];
+
     public static function new(): self
     {
         return resolve(static::class);

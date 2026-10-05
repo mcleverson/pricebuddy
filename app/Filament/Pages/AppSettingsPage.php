@@ -130,6 +130,19 @@ class AppSettingsPage extends SettingsPage
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
+        // Intelligence telegram token: encrypt a new value, keep the stored one when left blank.
+        $token = data_get($data, 'intelligence_settings.telegram_bot_token');
+        if (filled($token)) {
+            try {
+                Crypt::decryptString($token);
+            } catch (DecryptException) {
+                data_set($data, 'intelligence_settings.telegram_bot_token', Crypt::encryptString($token));
+            }
+        } else {
+            data_set($data, 'intelligence_settings.telegram_bot_token',
+                data_get(AppSettings::new()->toArray(), 'intelligence_settings.telegram_bot_token'));
+        }
+
         $existingProviders = collect(
             data_get(AppSettings::new()->toArray(), 'integrated_services.ai.providers', [])
         );
@@ -203,6 +216,12 @@ class AppSettingsPage extends SettingsPage
                         ->icon('heroicon-o-sparkles')
                         ->schema([
                             $this->getAiSettings(),
+                        ]),
+
+                    Tabs\Tab::make('Intelligence')
+                        ->icon('heroicon-o-light-bulb')
+                        ->schema([
+                            $this->getIntelligenceSettings(),
                         ]),
                 ]),
         ]);
@@ -388,6 +407,68 @@ class AppSettingsPage extends SettingsPage
             __('Push notifications via Apprise'),
             flat: true
         );
+    }
+
+    /**
+     * Read by pricebuddy-intelligence (GET /api/intelligence/settings). Blank
+     * fields fall back to the service defaults.
+     */
+    protected function getIntelligenceSettings(): Group
+    {
+        $number = fn (string $name, string $label, string $help, int|float $placeholder): TextInput => TextInput::make($name)
+            ->label($label)
+            ->numeric()
+            ->minValue(0)
+            ->placeholder((string) $placeholder)
+            ->hintIcon(Icons::Help->value, $help);
+
+        return Group::make([
+            self::makeSettingsHeading('Analysis', __('Which imported products are analyzed and how much market searching is allowed')),
+            Group::make([
+                Select::make('window')
+                    ->label('Products to analyze')
+                    ->options(['today' => 'Imported today', 'today_yesterday' => 'Imported today and yesterday'])
+                    ->placeholder('Imported today'),
+                $number('batch_size', 'Products per batch', 'How many not-yet-analyzed products each run takes.', 20),
+                $number('market_searches_per_day', 'Market searches per day', 'Google Shopping searches allowed per day. Only offers that could be published are searched.', 30),
+                $number('market_search_delay_seconds', 'Seconds between searches', 'Pause between two Google Shopping searches, to keep traffic low.', 20),
+                Select::make('auto_run_interval_minutes')
+                    ->label('Run automatically')
+                    ->options([0 => 'Off (manual)', 30 => 'Every 30 minutes', 60 => 'Every hour', 180 => 'Every 3 hours', 360 => 'Every 6 hours'])
+                    ->placeholder('Off (manual)'),
+            ])->columns(2),
+
+            self::makeSettingsHeading('Decision rules', __('Deterministic thresholds; the LLM never approves an offer')),
+            Group::make([
+                $number('min_references', 'Confirmed references required', 'Current prices of the same model and variant needed to confirm an offer.', 2),
+                $number('min_discount_percent', 'Minimum discount (%)', 'Against the store original price or the usual price in the history.', 15),
+                $number('max_market_gap_percent', 'Tolerated gap to the cheapest (%)', 'An offer up to this much above the cheapest reference can still be published.', 3),
+                $number('ignore_market_gap_percent', 'Ignore when cheaper elsewhere by (%)', 'Above this gap the offer is ignored instead of monitored.', 10),
+                $number('history_days', 'History window (days)', 'Days of PriceBuddy price history used for the usual and lowest price.', 60),
+                $number('repost_min_drop_percent', 'Repost when the price drops (%)', 'An already published offer is reposted only after this extra drop.', 5),
+                $number('duplicate_window_hours', 'Duplicate window (hours)', 'The same offer is not published twice within this window.', 24),
+            ])->columns(2),
+
+            self::makeSettingsHeading('Publishing', __('Telegram channel used when an offer is published')),
+            Group::make([
+                $number('posting_start_hour', 'Posting starts at (hour)', 'Offers approved outside posting hours are scheduled.', 8)->maxValue(23),
+                $number('posting_end_hour', 'Posting ends at (hour)', 'Offers approved outside posting hours are scheduled.', 22)->maxValue(24),
+                TextInput::make('telegram_bot_token')
+                    ->label('Telegram bot token')
+                    ->password()
+                    ->placeholder('Leave blank to keep the saved token')
+                    ->hintIcon(Icons::Help->value, 'Stored encrypted. Create a bot with @BotFather and add it to the group as admin.'),
+                TextInput::make('telegram_chat_id')
+                    ->label('Telegram chat id')
+                    ->hintIcon(Icons::Help->value, 'Group or channel id (e.g. -1001234567890) or @channel_username.'),
+                \Filament\Forms\Components\Toggle::make('telegram_enabled')
+                    ->label('Telegram enabled'),
+                \Filament\Forms\Components\Toggle::make('dry_run')
+                    ->label('Dry-run (do not send)')
+                    ->afterStateHydrated(fn (\Filament\Forms\Components\Toggle $component, $state) => $component->state($state ?? true))
+                    ->hintIcon(Icons::Help->value, 'While on, publications are recorded but never sent.'),
+            ])->columns(2),
+        ])->statePath('intelligence_settings');
     }
 
     protected function getTelegramSettings(): Group

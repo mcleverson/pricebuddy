@@ -43,7 +43,7 @@ class DetailHandler extends Handlers
             $query->where(static::getKeyName(), $id),
             $apiRequest
         )
-            ->allowedIncludes(['tags', 'user'])
+            ->allowedIncludes(['tags', 'user', 'urls', 'coupons'])
             ->first();
 
         if (! $query) {

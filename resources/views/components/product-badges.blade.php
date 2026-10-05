@@ -2,6 +2,7 @@
     $product = $product ?? $getRecord();
     $latestPrice = $product->getPriceCache()->first();
     $coupons = $product->coupons->where('status', \App\Models\Coupon::STATUS_ACTIVE);
+    $publication = \App\Services\Intelligence\PublicationStatus::for($product->id);
     $verdict = data_get($product->insights_cache, 'dealScore.verdict');
     $verdictKey = data_get($product->insights_cache, 'dealScore.verdictKey');
     $lowConfidence = (bool) data_get($product->insights_cache, 'dealScore.lowConfidence', false);
@@ -18,8 +19,21 @@
         ? __('The price has not moved yet, so there is nothing to compare it against')
         : ($lowConfidence ? __('Not enough price history for a confident verdict') : $verdict);
 @endphp
-@if (! $product->is_last_scrape_successful || $product->is_notified_price || $latestPrice?->isUnavailable() || $product->paused || $verdict || $coupons->isNotEmpty())
+@if (! $product->is_last_scrape_successful || $product->is_notified_price || $latestPrice?->isUnavailable() || $product->paused || $verdict || $coupons->isNotEmpty() || $publication)
     <div {{ $attributes->merge(['class' => 'inline-flex gap-2 mt-1 flex-wrap']) }}>
+        @if ($publication)
+            @php($when = $publication['at'] ? \Illuminate\Support\Carbon::parse($publication['at'])->format('d/m H:i') : null)
+            <div class="mt-1 whitespace-nowrap">
+                @include('components.icon-badge', match ($publication['status']) {
+                    'in_queue' => ['label' => __('In Queue'), 'color' => 'warning', 'icon' => 'heroicon-m-clock',
+                        'hoverText' => __('Scheduled to be published').($when ? ' '.$when : '')],
+                    'published' => ['label' => __('Published'), 'color' => 'success', 'icon' => 'heroicon-m-paper-airplane',
+                        'hoverText' => __('Published').($when ? ' '.$when : '')],
+                    default => ['label' => __('Published (dry-run)'), 'color' => 'gray', 'icon' => 'heroicon-m-paper-airplane',
+                        'hoverText' => __('Recorded in dry-run, not actually sent').($when ? ' '.$when : '')],
+                })
+            </div>
+        @endif
         @foreach ($coupons as $coupon)
             <div class="mt-1 whitespace-nowrap">
                 @include('components.icon-badge', [

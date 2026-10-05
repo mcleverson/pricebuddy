@@ -93,6 +93,7 @@ class PaginationHandler extends Handlers
             'user',
             'tags',
             'urls',
+            'coupons',
         ];
     }
 

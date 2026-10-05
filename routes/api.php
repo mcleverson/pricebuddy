@@ -3,6 +3,7 @@
 use App\Enums\ApiAbility;
 use App\Http\Controllers\Api\ClientConfigController;
 use App\Http\Controllers\Api\DiscoveryCandidateController;
+use App\Http\Controllers\Api\IntelligenceSettingsController;
 use App\Http\Controllers\Api\MetaExtractionController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -30,3 +31,7 @@ Route::post('/discovery/candidates/check', [DiscoveryCandidateController::class,
 Route::post('/discovery/candidates/images', [DiscoveryCandidateController::class, 'images'])
     ->middleware(['auth:sanctum', 'ability:'.ApiAbility::DiscoveryCandidatesIngest->value])
     ->name('api.discovery.candidates.images');
+
+Route::get('/intelligence/settings', IntelligenceSettingsController::class)
+    ->middleware(['auth:sanctum', 'ability:'.ApiAbility::IntelligenceSettingsRead->value])
+    ->name('api.intelligence.settings');

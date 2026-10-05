@@ -12,6 +12,8 @@ enum ApiAbility: string
 
     case DiscoveryCandidatesIngest = 'discovery:candidates:ingest';
 
+    case IntelligenceSettingsRead = 'intelligence:settings:read';
+
     public function group(): string
     {
         return match ($this) {
@@ -19,6 +21,7 @@ enum ApiAbility: string
             self::UserDetail => 'Account',
             self::ClientConfigRead => 'Client config',
             self::DiscoveryCandidatesIngest => 'Discovery',
+            self::IntelligenceSettingsRead => 'Intelligence',
         };
     }
 
@@ -29,6 +32,7 @@ enum ApiAbility: string
             self::UserDetail => 'Read the authenticated account',
             self::ClientConfigRead => 'Read client capability configuration',
             self::DiscoveryCandidatesIngest => 'Ingest externally discovered product candidates',
+            self::IntelligenceSettingsRead => 'Read the Intelligence settings (for pricebuddy-intelligence)',
         };
     }
 }

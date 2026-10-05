@@ -39,6 +39,11 @@ return [
         'token' => env('PUSHOVER_APP_TOKEN'),
     ],
 
+    'intelligence' => [
+        'url' => env('INTELLIGENCE_URL', 'http://intelligence:8100'),
+        'timeout' => (int) env('INTELLIGENCE_TIMEOUT', 30),
+    ],
+
     'hermes' => [
         'url' => env('HERMES_URL', 'http://hermes:8000'),
         // Must exceed HERMES_RUN_TIMEOUT_SECONDS (the agent's own self-imposed
