@@ -432,6 +432,11 @@ class StoreResource extends Resource
                 ->label('Offer URL parameters')
                 ->hintIcon(Icons::Help->value, 'URL query parameters that identify a specific offer. When present, the listing price is kept instead of the product page price. Added to the built-in ones (wid, deal_id, deal_print_id).')
                 ->placeholder('e.g. wid'),
+
+            Forms\Components\TagsInput::make('product_url_patterns')
+                ->label('Product URL patterns')
+                ->hintIcon(Icons::Help->value, 'Regular expressions a product page URL must match (any of them). Links that match none, such as category or search pages, are never collected. Leave empty to use the marketplace default.')
+                ->placeholder('e.g. /dp/[A-Z0-9]{10}'),
         ];
     }
 

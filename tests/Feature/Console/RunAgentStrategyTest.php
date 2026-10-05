@@ -81,6 +81,7 @@ class RunAgentStrategyTest extends TestCase
                 'llm_max_links_per_segment' => 30,
                 'listing_image_enrichment' => true,
                 'require_image' => true,
+                'product_url_patterns' => ['/p/MLB\\d+', '/up/MLBU\\d+', 'MLB-?\\d{6,}'],
             ]);
     }
 

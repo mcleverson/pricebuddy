@@ -562,6 +562,15 @@ class Agent:
         self.llm_max_links_per_segment = max_segment_links
         self.image_exclude_patterns = self._string_list_option("image_exclude_patterns")
         self.offer_query_params = self._string_list_option("offer_query_params")
+        # Store/marketplace-configured shapes of a product page URL. When set, a
+        # candidate whose URL matches none (e.g. a category link the LLM tied to
+        # a product title) is never collected. Invalid patterns are ignored.
+        self.product_url_patterns = []
+        for pattern in self._string_list_option("product_url_patterns"):
+            try:
+                self.product_url_patterns.append(re.compile(pattern, re.IGNORECASE))
+            except re.error:
+                logging.warning("Ignoring invalid product URL pattern: %s", pattern)
         # Admission (not ranking) against this strategy's own niche profiles.
         # Disabled when no profile is configured, preserving the previous flow.
         self.relevance = RelevanceProfile(relevance_profile, self.tags)
@@ -913,6 +922,12 @@ class Agent:
             for item in call.arguments["candidates"]:
                 if not isinstance(item, dict) or item.get("url") not in observed_urls:
                     self.rejected_candidates += 1
+                    continue
+                if self.product_url_patterns and not any(
+                    pattern.search(item["url"]) for pattern in self.product_url_patterns
+                ):
+                    self.rejected_candidates += 1
+                    logging.info("Candidate rejected, not a product URL: %s", item["url"][:160])
                     continue
                 try:
                     candidate = ProductCandidate(

@@ -74,6 +74,7 @@ class Store extends Model
     public const array AGENT_LIST_OPTIONS = [
         'image_exclude_patterns',
         'offer_query_params',
+        'product_url_patterns',
     ];
 
     protected $fillable = [

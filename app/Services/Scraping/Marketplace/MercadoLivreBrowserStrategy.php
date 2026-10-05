@@ -51,6 +51,8 @@ class MercadoLivreBrowserStrategy extends AbstractMarketplaceBrowserStrategy
             // Do not persist an incomplete discovery when the product page
             // was blocked before its declarative/accessibility image loaded.
             'require_image' => true,
+            // Catalog (/p/MLB…, /up/MLBU…) and listing (MLB-…) product pages only.
+            'product_url_patterns' => ['/p/MLB\d+', '/up/MLBU\d+', 'MLB-?\d{6,}'],
         ];
     }
 

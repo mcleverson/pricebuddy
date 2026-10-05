@@ -82,6 +82,7 @@ class MarketplaceStrategyResolverTest extends TestCase
             'llm_max_links_per_segment' => 30,
             'listing_image_enrichment' => true,
             'require_image' => true,
+            'product_url_patterns' => ['/p/MLB\\d+', '/up/MLBU\\d+', 'MLB-?\\d{6,}'],
         ], $strategy->agentOptions('https://mercadolivre.com.br/p/1'));
         $this->assertSame('account_verification', $strategy->detectBlockedResponse([], '/gz/account-verification', null));
         $this->assertSame('http_403', $strategy->detectBlockedResponse(['HTTP 403'], '', null));
