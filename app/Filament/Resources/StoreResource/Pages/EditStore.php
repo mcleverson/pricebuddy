@@ -35,6 +35,43 @@ class EditStore extends EditRecord
     /** @var array<string, mixed>|null */
     public ?array $healPreview = null;
 
+    /**
+     * The form only dehydrates visible fields, so saving would drop settings
+     * that are hidden for the current access mode or never shown at all
+     * (e.g. discovery_keyword_offsets, coupons.last_sync). Keep them.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        /** @var Store $store */
+        $store = $this->getRecord();
+        if (array_key_exists('settings', $data)) {
+            $data['settings'] = self::mergeSettings((array) $store->settings, (array) $data['settings']);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Form values win; nested objects merge recursively, lists are replaced whole.
+     *
+     * @param  array<string, mixed>  $stored
+     * @param  array<string, mixed>  $form
+     * @return array<string, mixed>
+     */
+    protected static function mergeSettings(array $stored, array $form): array
+    {
+        foreach ($form as $key => $value) {
+            $stored[$key] = is_array($value) && ! array_is_list($value) && is_array($stored[$key] ?? null) && ! array_is_list($stored[$key])
+                ? self::mergeSettings($stored[$key], $value)
+                : $value;
+        }
+
+        return $stored;
+    }
+
     public function runScrape(string $url, ?string $scraper = null): void
     {
         $this->authorizeAccess();
