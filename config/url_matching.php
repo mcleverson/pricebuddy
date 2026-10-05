@@ -22,7 +22,7 @@ return [
         'creative', 'creativeasin', 'crid', 'dchild', 'dclid', 'epik', 'fbclid',
         'gbraid', 'gclid', 'igshid', 'irclickid', 'keywords', 'linkcode', 'linkid',
         'mc_cid', 'mc_eid', 'msclkid', 'psc', 'qid', 'ref', 'sbo', 'smid', 'spm',
-        'sprefix', 'sr', 'srsltid', 'tag', 'th', 'ttclid', 'twclid', 'wbraid',
+        'sprefix', 'sr', 'srsltid', 'tag', 'th', 'tracking_id', 'ttclid', 'twclid', 'wbraid',
         'yclid',
     ], array_filter(array_map('trim', explode(',', (string) env('URL_MATCHING_TRACKING_PARAMS_EXTRA', ''))), fn (string $value): bool => $value !== '')),
 
