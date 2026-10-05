@@ -95,6 +95,31 @@ services:
             timeout: 5s
             retries: 3
 
+    intelligence:
+        build:
+            context: .
+            dockerfile: intelligence/Dockerfile
+        image: pricebuddy-intelligence:latest
+        restart: unless-stopped
+        environment:
+            PRICEBUDDY_API_BASE_URL: http://app/api
+            # API key created in PriceBuddy > API Keys with: product pagination,
+            # product detail and "Read the Intelligence settings".
+            INTELLIGENCE_PRICEBUDDY_API_TOKEN: ${INTELLIGENCE_PRICEBUDDY_API_TOKEN:-}
+            HERMES_URL: http://hermes:8000
+            TZ: America/Sao_Paulo
+        depends_on:
+            app:
+                condition: service_started
+            hermes:
+                condition: service_started
+        volumes:
+            - intelligence_data:/data
+        networks:
+            - hermes_app
+        expose:
+            - 8100
+
     hermes_visual:
         profiles: [ "visual" ]
         build:
@@ -204,6 +229,7 @@ volumes:
     storage:
     database:
     hermes_chromium_profile:
+    intelligence_data:
 
 networks:
     default:
