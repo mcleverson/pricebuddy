@@ -195,12 +195,19 @@ class BrowserToolSet:
             # marketplaces with many cards, while nested role locators let
             # the LLM associate the correct picture without CSS/HTML
             # selectors.
+            # Infinite-scroll listings re-render while being read, so a link
+            # counted a moment ago may be gone: skip it instead of failing the
+            # whole observation (the text and links above are already taken).
             link_locators = self.page.get_by_role("link")
-            links_by_url = {
-                link.get_attribute("href"): link
-                for index in range(link_locators.count())
-                if (link := link_locators.nth(index)).get_attribute("href")
-            }
+            links_by_url = {}
+            for index in range(link_locators.count()):
+                link = link_locators.nth(index)
+                try:
+                    href = link.get_attribute("href", timeout=self.ELEMENT_READ_TIMEOUT_MS)
+                except Exception:
+                    continue
+                if href:
+                    links_by_url[href] = link
             observed_image_urls = {
                 image.get("src") for image in images
                 if isinstance(image, dict) and image.get("src")
@@ -210,27 +217,32 @@ class BrowserToolSet:
                 semantic_link = links_by_url.get(link_url)
                 if semantic_link is None:
                     continue
-                link_images = semantic_link.get_by_role("img")
-                for image_index in range(link_images.count()):
-                    image = link_images.nth(image_index)
-                    image_url = image.evaluate(
-                        "element => element.currentSrc || element.src || "
-                        "element.getAttribute('data-src') || element.getAttribute('data-lazy-src') || ''"
-                    )
-                    if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
-                        continue
-                    link["image_url"] = image_url
-                    if image_url not in observed_image_urls:
-                        images.append({
-                            "src": image_url,
-                            "alt": image.get_attribute("alt") or "",
-                            "order": len(images),
-                            "width": 0,
-                            "height": 0,
-                            "visible": True,
-                        })
-                        observed_image_urls.add(image_url)
-                    break
+                try:
+                    link_images = semantic_link.get_by_role("img")
+                    for image_index in range(link_images.count()):
+                        image = link_images.nth(image_index)
+                        image_url = image.evaluate(
+                            "element => element.currentSrc || element.src || "
+                            "element.getAttribute('data-src') || element.getAttribute('data-lazy-src') || ''",
+                            timeout=self.ELEMENT_READ_TIMEOUT_MS,
+                        )
+                        if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
+                            continue
+                        link["image_url"] = image_url
+                        if image_url not in observed_image_urls:
+                            images.append({
+                                "src": image_url,
+                                "alt": image.get_attribute("alt", timeout=self.ELEMENT_READ_TIMEOUT_MS) or "",
+                                "order": len(images),
+                                "width": 0,
+                                "height": 0,
+                                "visible": True,
+                            })
+                            observed_image_urls.add(image_url)
+                        break
+                except Exception:
+                    # The link left the page mid-read; it simply has no image.
+                    continue
 
             return BrowserToolResult(
                 success=True,
@@ -836,6 +848,10 @@ class BrowserToolSet:
         self.candidates = retained_candidates
 
         return discarded_count
+
+    # Per-element read budget while observing a page. Elements that vanish on
+    # re-render would otherwise hold the page for Playwright's 30s default.
+    ELEMENT_READ_TIMEOUT_MS = 2000
 
     NEXT_PAGE = re.compile(
         r"^(?:pr[óo]xim[ao](?: p[áa]gina)?|seguinte|avan[çc]ar|next(?: page)?|"
