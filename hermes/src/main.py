@@ -3,7 +3,8 @@
 Exposes health and discovery endpoints used by the PriceBuddy app to trigger
 Hermes agent runs via the internal Docker network, plus /evaluate, which
 applies the same relevance admission to candidates discovered elsewhere
-(e.g. a marketplace API) so both discovery paths share one set of rules.
+(e.g. a marketplace API) so both discovery paths share one set of rules, and
+/search, which returns Google Shopping results as market price references.
 """
 
 import json
@@ -18,11 +19,15 @@ from agent import Agent
 from browser_tools import ProductCandidate
 from llm_client import LLMClient
 from relevance import RelevanceEvaluator, RelevanceProfile
+from search import ShoppingSearch
 
 MAX_EVALUATE_CANDIDATES = 300
 
 
 DISCOVERY_LOCK = threading.Lock()
+# Market-price searches run in their own browser, so they never wait on (or
+# block) a discovery run; one search at a time keeps Google traffic low.
+SEARCH_LOCK = threading.Lock()
 
 
 def evaluate_request(body: dict[str, Any], llm_client: LLMClient | None = None) -> tuple[int, dict[str, Any]]:
@@ -84,7 +89,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if self.path not in ("/discover", "/evaluate"):
+        if self.path not in ("/discover", "/evaluate", "/search"):
             self.send_response(404)
             self.end_headers()
             return
@@ -103,6 +108,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if not isinstance(body, dict):
             self._send_json(400, {"status": "error", "error": "Expected a JSON object"})
+            return
+
+        if self.path == "/search":
+            self._handle_search(body)
             return
 
         if self.path == "/evaluate":
@@ -185,6 +194,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         finally:
             DISCOVERY_LOCK.release()
 
+        self._send_json(200, report)
+
+    def _handle_search(self, body: dict[str, Any]) -> None:
+        """Google Shopping results for one query; nothing is ingested or judged."""
+        query = body.get("query")
+        agent_options = body.get("agent_options") or {}
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            self._send_json(400, {"status": "error", "error": "query must be a non-empty string up to 200 chars"})
+            return
+        if not isinstance(agent_options, dict):
+            self._send_json(400, {"status": "error", "error": "agent_options must be an object"})
+            return
+        if not SEARCH_LOCK.acquire(blocking=False):
+            self._send_json(409, {"status": "error", "error": "A search is already active"})
+            return
+        try:
+            report = ShoppingSearch(" ".join(query.split()), browser_options=agent_options, headless=True).run()
+        finally:
+            SEARCH_LOCK.release()
         self._send_json(200, report)
 
     def _send_json(self, status_code: int, data: dict[str, Any]) -> None:
