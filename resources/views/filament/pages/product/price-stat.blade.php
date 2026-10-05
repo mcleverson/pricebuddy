@@ -62,6 +62,16 @@
             >
                 {{ $priceCache->hasVisiblePrice() ? $getValue() : __('Unavailable') }}
             </div>
+            @if ($priceCache->hasVisiblePrice() && $priceCache->hasOriginalPrice() && $priceCache->getDiscountPercentage() > 0)
+                <div class="mt-1 flex items-center gap-2">
+                    <span class="text-sm line-through text-gray-400 dark:text-gray-500">
+                        {{ $priceCache->getOriginalPriceFormatted() }}
+                    </span>
+                    <span class="inline-flex items-center rounded-md bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
+                        -{{ $priceCache->getDiscountPercentage() }}%
+                    </span>
+                </div>
+            @endif
         </div>
 
         <div class="flex items-center gap-x-2 justify-start">

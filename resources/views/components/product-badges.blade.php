@@ -1,6 +1,7 @@
 @php
     $product = $product ?? $getRecord();
     $latestPrice = $product->getPriceCache()->first();
+    $coupons = $product->coupons->where('status', \App\Models\Coupon::STATUS_ACTIVE);
     $verdict = data_get($product->insights_cache, 'dealScore.verdict');
     $verdictKey = data_get($product->insights_cache, 'dealScore.verdictKey');
     $lowConfidence = (bool) data_get($product->insights_cache, 'dealScore.lowConfidence', false);
@@ -17,8 +18,18 @@
         ? __('The price has not moved yet, so there is nothing to compare it against')
         : ($lowConfidence ? __('Not enough price history for a confident verdict') : $verdict);
 @endphp
-@if (! $product->is_last_scrape_successful || $product->is_notified_price || $latestPrice?->isUnavailable() || $product->paused || $verdict)
+@if (! $product->is_last_scrape_successful || $product->is_notified_price || $latestPrice?->isUnavailable() || $product->paused || $verdict || $coupons->isNotEmpty())
     <div {{ $attributes->merge(['class' => 'inline-flex gap-2 mt-1 flex-wrap']) }}>
+        @foreach ($coupons as $coupon)
+            <div class="mt-1 whitespace-nowrap">
+                @include('components.icon-badge', [
+                    'hoverText' => $coupon->hoverText(),
+                    'label' => $coupon->badgeLabel(),
+                    'color' => 'success',
+                    'icon' => 'heroicon-m-ticket',
+                ])
+            </div>
+        @endforeach
         @if ($verdict && ! $product->is_notified_price)
             <div class="mt-1 whitespace-nowrap" data-verdict-color="{{ $lowConfidence ? 'gray' : $verdictColor }}">
                 @include('components.icon-badge', [

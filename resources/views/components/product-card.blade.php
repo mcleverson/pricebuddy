@@ -66,6 +66,9 @@
                             <x-price-factor-price :cache="$latestPrice" />
                         </span>
                     @endif
+                    <span class="text-xs text-gray-400 dark:text-gray-500" title="{{ __('Imported at') }}">
+                        {{ __('Imported :date', ['date' => $product->created_at->format('d/m/Y H:i')]) }}
+                    </span>
                     <div class="pb-card-badges block mb-2">
                         @include('components.product-badges', ['product' => $product])
                     </div>

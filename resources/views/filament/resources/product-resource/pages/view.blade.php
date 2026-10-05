@@ -52,7 +52,7 @@
                         <div class="mt-6 md:mt-8">
                             <div class="pb-2 gap-4 md:flex-row flex flex-col md:items-start">
                                 <div class="text-sm text-gray-500 dark:text-gray-400">
-                                    {{ __('Created :date', ['date' => $record->created_at->diffForHumans()]) }}
+                                    <span title="{{ $record->created_at->diffForHumans() }}">{{ __('Imported :date', ['date' => $record->created_at->format('d/m/Y H:i')]) }}</span>
                                     {{ $record->tags->count() > 0 ? __('in').':' : '' }}
                                 </div>
                                 <div class="flex gap-2 flex-wrap items-center">
@@ -67,6 +67,20 @@
                                     @endforeach
                                 </div>
                             </div>
+                            @php($coupons = $record->coupons->where('status', \App\Models\Coupon::STATUS_ACTIVE))
+                            @if ($coupons->isNotEmpty())
+                                <div class="flex gap-2 flex-wrap items-center mt-2">
+                                    @foreach ($coupons as $coupon)
+                                        @include('components.icon-badge', [
+                                            'hoverText' => $coupon->hoverText(),
+                                            'label' => $coupon->badgeLabel(),
+                                            'color' => 'success',
+                                            'icon' => 'heroicon-m-ticket',
+                                        ])
+                                        <span class="text-xs text-gray-500 dark:text-gray-400">{{ $coupon->hoverText() }}</span>
+                                    @endforeach
+                                </div>
+                            @endif
                         </div>
                     </div>
                 </div>
