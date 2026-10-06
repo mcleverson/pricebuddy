@@ -58,6 +58,17 @@ return [
             ],
     ],
 
+        'mercadolivre' => [
+            'query_params' => [
+                'matt_word' => env('AFFILIATE_CODE_MERCADOLIVRE_WORD', 'alphaitnetbr'),
+                'matt_tool' => env('AFFILIATE_CODE_MERCADOLIVRE_TOOL', '34509844'),
+            ],
+            'domains' => [
+                'mercadolivre.com.br',
+                'produto.mercadolivre.com.br',
+            ],
+        ],
+
         'ebay' => [
             'query_params' => [
                 'mkrid' => env('AFFILIATE_CODE_EBAY_MKRID', '705-53470-19255-0'),
