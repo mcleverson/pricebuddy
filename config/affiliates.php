@@ -42,7 +42,7 @@ return [
 
         'amazon_au' => [
             'query_params' => [
-                'tag' => env('AFFILIATE_CODE_AMAZON_AU', 'achoubarat0a2-22'),
+                'tag' => env('AFFILIATE_CODE_AMAZON_AU', 'achoubarat0a2-20'),
             ],
             'domains' => [
                 'amazon.com.au',
@@ -51,23 +51,12 @@ return [
 
         'amazon_br' => [
             'query_params' => [
-                'tag' => env('AFFILIATE_CODE_AMAZON_BR', 'achoubarat0a2-22'),
+                'tag' => env('AFFILIATE_CODE_AMAZON_BR', 'achoubarat0a2-20'),
             ],
             'domains' => [
                 'amazon.com.br',
             ],
     ],
-
-        'mercadolivre' => [
-            'query_params' => [
-                'matt_word' => env('AFFILIATE_CODE_MERCADOLIVRE_WORD', 'alphaitnetbr'),
-                'matt_tool' => env('AFFILIATE_CODE_MERCADOLIVRE_TOOL', '34509844'),
-            ],
-            'domains' => [
-                'mercadolivre.com.br',
-                'produto.mercadolivre.com.br',
-            ],
-        ],
 
         'ebay' => [
             'query_params' => [
