@@ -135,7 +135,13 @@ class ShopeeProvider extends ConfiguredProvider
             // The API sends a machine-format string ("12.9"); hand it over as a
             // number so it is not read as locale-formatted scraped text.
             'price' => is_numeric($price) ? (float) $price : null,
-            'original_price' => $this->originalPrice($node),
+            // The API has no "before discount" price. priceDiscountRate is not
+            // the strikethrough shown on the product page (a 43% rate came back
+            // for a listing with no "De" price at all), so no original price is
+            // derived from it.
+            'original_price' => null,
+            'product_commission' => $this->commissionPercent($node, 'commissionRate'),
+            'seller_commission' => $this->commissionPercent($node, 'sellerCommissionRate'),
             'image' => data_get($node, 'imageUrl'),
         ];
     }
@@ -214,7 +220,12 @@ class ShopeeProvider extends ConfiguredProvider
             }
         }
 
-        return $results->unique('url')->values();
+        // Every candidate already comes from the sales / top-performance
+        // listings; among them, the ones that pay the most (in R$) go first, as
+        // ingestion stops once the run's target is reached.
+        return $results->unique('url')
+            ->sortByDesc(fn (array $candidate): float => (float) $candidate['price'] * (float) $candidate['product_commission'])
+            ->values();
     }
 
     /**
@@ -347,7 +358,9 @@ class ShopeeProvider extends ConfiguredProvider
                 'affiliate_url' => data_get($node, 'offerLink'),
                 'title' => data_get($node, 'productName'),
                 'price' => data_get($node, 'priceMin'),
-                'original_price' => $this->originalPrice($node),
+                'original_price' => null,
+                'product_commission' => $this->commissionPercent($node, 'commissionRate'),
+                'seller_commission' => $this->commissionPercent($node, 'sellerCommissionRate'),
                 'image' => data_get($node, 'imageUrl'),
                 'store_id' => $store->getKey(),
                 'tags' => [$tag],
@@ -456,18 +469,16 @@ class ShopeeProvider extends ConfiguredProvider
     }
 
     /**
+     * The API sends rates as fraction strings ("0.0850" = 8.5%); PriceBuddy
+     * stores commission as a % of the price.
+     *
      * @param  array<string, mixed>|null  $node
      */
-    protected function originalPrice(?array $node): ?float
+    protected function commissionPercent(?array $node, string $field): ?float
     {
-        $price = data_get($node, 'priceMin');
-        $discountRate = data_get($node, 'priceDiscountRate');
+        $rate = data_get($node, $field);
 
-        if (! is_numeric($price) || ! is_numeric($discountRate) || (float) $discountRate <= 0) {
-            return null;
-        }
-
-        return round((float) $price / (1 - (float) $discountRate / 100), 2);
+        return is_numeric($rate) && (float) $rate > 0 ? round((float) $rate * 100, 2) : null;
     }
 
     protected function productOfferFields(): string

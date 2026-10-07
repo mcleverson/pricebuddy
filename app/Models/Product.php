@@ -604,6 +604,8 @@ class Product extends Model
                     'price' => $urlHistory->isEmpty() ? 0 : $urlHistory->last(),
                     'unit_price' => $lastScrapedPrice->unit_price ?? ($urlHistory->isEmpty() ? 0 : $urlHistory->last()),
                     'original_price' => $lastScrapedPrice->original_price ?? null,
+                    'product_commission' => $lastScrapedPrice->product_commission ?? null,
+                    'seller_commission' => $lastScrapedPrice->seller_commission ?? null,
                     'price_factor' => ($f = $url->price_factor ?: 1) == (int) $f ? (int) $f : $f,
                     'history' => $urlHistory->toArray(),
                     'last_scrape' => $lastScrapedTimestamp?->toDateTimeString(),

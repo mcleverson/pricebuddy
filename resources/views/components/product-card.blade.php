@@ -61,6 +61,14 @@
                             </span>
                         @endif
                     </div>
+                    @if ($latestPrice?->hasCommission())
+                        <span class="text-xs text-success-600 dark:text-success-400 font-medium" title="{{ __('Affiliate commission') }}">
+                            {{ __('Commission :rate% (~:value)', ['rate' => round($latestPrice->getCommission(), 1), 'value' => $latestPrice->getCommissionValueFormatted()]) }}
+                            @if ($latestPrice->getSellerCommission())
+                                · {{ __(':rate% from the seller', ['rate' => round($latestPrice->getSellerCommission(), 1)]) }}
+                            @endif
+                        </span>
+                    @endif
                     @if ($latestPrice?->hasPriceFactor())
                         <span class="text-xs text-gray-500 dark:text-gray-400 block mb-2 mt-1">
                             <x-price-factor-price :cache="$latestPrice" />

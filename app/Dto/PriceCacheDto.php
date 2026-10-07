@@ -31,6 +31,10 @@ class PriceCacheDto
 
     private ?float $originalPrice;
 
+    private ?float $commission;
+
+    private ?float $sellerCommission;
+
     private float $priceFactor;
 
     private array $history;
@@ -61,6 +65,8 @@ class PriceCacheDto
         ?string $unitOfMeasure = self::DEFAULT_UNIT_OF_MEASURE,
         StockStatus|string|null $availability = null,
         ?float $originalPrice = null,
+        ?float $commission = null,
+        ?float $sellerCommission = null,
     ) {
         $this->storeId = $storeId;
         $this->storeName = $storeName;
@@ -70,6 +76,8 @@ class PriceCacheDto
         $this->price = $price;
         $this->unitPrice = $unitPrice ?? $price;
         $this->originalPrice = $originalPrice;
+        $this->commission = $commission;
+        $this->sellerCommission = $sellerCommission;
         $this->priceFactor = $priceFactor;
         $this->history = $history;
         $this->lastScrapeDate = $lastScrape ? Carbon::parse($lastScrape) : null;
@@ -173,6 +181,32 @@ class PriceCacheDto
         }
 
         return round((($this->originalPrice - $current) / $this->originalPrice) * 100, 0);
+    }
+
+    public function hasCommission(): bool
+    {
+        return $this->commission !== null && $this->commission > 0;
+    }
+
+    /**
+     * Affiliate commission, as a % of the price.
+     */
+    public function getCommission(): ?float
+    {
+        return $this->commission;
+    }
+
+    /**
+     * Part of the commission paid by the seller (e.g. Shopee's extra commission), as a %.
+     */
+    public function getSellerCommission(): ?float
+    {
+        return $this->sellerCommission > 0 ? $this->sellerCommission : null;
+    }
+
+    public function getCommissionValueFormatted(): string
+    {
+        return CurrencyHelper::toString($this->getPrice() * $this->commission / 100, locale: $this->locale, iso: $this->currency);
     }
 
     public function getUnitOfMeasure(): string
@@ -306,6 +340,8 @@ class PriceCacheDto
             $data['unit_of_measure'] ?? null,
             $data['availability'] ?? null,
             $data['original_price'] ?? null,
+            $data['product_commission'] ?? null,
+            $data['seller_commission'] ?? null,
         );
     }
 
@@ -327,6 +363,8 @@ class PriceCacheDto
             'original_price' => $this->getOriginalPrice(),
             'original_price_formatted' => $this->getOriginalPriceFormatted(),
             'discount_percentage' => $this->getDiscountPercentage(),
+            'product_commission' => $this->commission,
+            'seller_commission' => $this->sellerCommission,
             'price_factor' => $this->getPriceFactor(),
             'history' => $this->getHistory(),
             'last_scrape' => $this->getLastScrapeDate(),

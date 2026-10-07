@@ -24,6 +24,10 @@ class DiscoveryCandidateRequest extends FormRequest
             'title' => ['required', 'string', 'max:1024'],
             'price' => ['required', 'numeric', 'gt:0'],
             'original_price' => ['sometimes', 'nullable', 'numeric', 'gt:0'],
+            // Affiliate commission as a % of the price, when the source knows it;
+            // seller_commission is the part of it paid by the seller.
+            'product_commission' => ['sometimes', 'nullable', 'numeric', 'between:0,100'],
+            'seller_commission' => ['sometimes', 'nullable', 'numeric', 'between:0,100'],
             'image' => ['sometimes', 'nullable', 'url:http,https', 'max:1024'],
             // A ready-to-use affiliate link, when the discovery source already has
             // one (e.g. Shopee's API returns it alongside the product itself) —

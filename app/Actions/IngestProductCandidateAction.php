@@ -152,6 +152,8 @@ class IngestProductCandidateAction
             'store_id' => $url->store_id,
             'price' => (float) $candidate['price'],
             'original_price' => isset($candidate['original_price']) ? (float) $candidate['original_price'] : null,
+            'product_commission' => isset($candidate['product_commission']) ? (float) $candidate['product_commission'] : null,
+            'seller_commission' => isset($candidate['seller_commission']) ? (float) $candidate['seller_commission'] : null,
             'unit_price' => (float) $candidate['price'] / $priceFactor,
             'price_factor' => $priceFactor,
         ]);

@@ -570,9 +570,15 @@ class Url extends Model
             ? $toFloat($originalPrice)
             : null;
 
+        // Affiliate commission (% of the price), only sent by sources that know
+        // it (e.g. the Shopee API); always numeric, never scraped text.
+        $commission = fn (string $key): ?float => is_numeric($value = data_get($scrapeResult, $key)) ? (float) $value : null;
+
         return $this->prices()->create([
             'price' => $priceFloat,
             'original_price' => $originalPriceFloat,
+            'product_commission' => $commission('product_commission'),
+            'seller_commission' => $commission('seller_commission'),
             'unit_price' => $priceFloat / $priceFactor,
             'price_factor' => $priceFactor,
             'store_id' => $this->store_id,

@@ -53,6 +53,8 @@ def build_offer(product: dict[str, Any]) -> rules.Offer | None:
         price=float(best["price"]), original_price=float(best["original_price"]) if best.get("original_price") else None,
         url=best.get("url"), history={day: float(price) for day, price in (best.get("history") or {}).items() if price},
         image=product.get("image"), imported_at=product.get("created_at"), conditions=conditions,
+        commission=float(best["product_commission"]) if best.get("product_commission") else None,
+        seller_commission=float(best["seller_commission"]) if best.get("seller_commission") else None,
     )
 
 

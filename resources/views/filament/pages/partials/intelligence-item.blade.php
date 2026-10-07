@@ -17,6 +17,9 @@
                 @if ($p['discount_percent'])<span class="text-danger-600 ml-1">-{{ (int) $p['discount_percent'] }}%</span>@endif
                 <span class="text-gray-500 ml-2">@ {{ $item['store'] }}</span>
                 <span class="text-gray-500 ml-2">· {{ __('usual') }} {{ $brl($p['history_median']) }} · {{ __('lowest') }} {{ $brl($p['history_low']) }}</span>
+                @if ($p['commission'] ?? null)
+                    <span class="text-success-600 ml-2">· {{ __('commission') }} {{ round($p['commission'], 1) }}% ({{ $brl($p['offer'] * $p['commission'] / 100) }})@if ($p['seller_commission'] ?? null), {{ round($p['seller_commission'], 1) }}% {{ __('from the seller') }}@endif</span>
+                @endif
             </div>
             <ul class="text-sm list-disc ml-5">
                 @foreach ($item['reasons'] as $reason)<li>{{ $reason }}</li>@endforeach

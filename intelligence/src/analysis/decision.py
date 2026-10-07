@@ -63,6 +63,8 @@ class Offer:
     image: str | None = None
     imported_at: str | None = None
     conditions: list[str] = field(default_factory=list)
+    commission: float | None = None         # affiliate commission, % of the price (display only)
+    seller_commission: float | None = None  # part of it paid by the seller, %
 
 
 def _pct(part: float, whole: float) -> float:
@@ -92,11 +94,15 @@ def decide(offer: Offer, references: list[Reference], *, last_publication: dict[
         "cheapest_reference": same[0].price if same else None,
         "cheapest_reference_store": same[0].store if same else None,
         "references_confirmed": len(same),
+        "commission": offer.commission,
+        "seller_commission": offer.seller_commission,
     }
 
     if offer.original_price and offer.history and offer.original_price > max(offer.history.values()) * 1.5:
         risks.append(f"store's original price {offer.original_price:.2f} is over 1.5x the highest price ever "
                      f"recorded ({max(offer.history.values()):.2f})")
+        # An inflated 'De' price can't make the offer a deal on its own.
+        discount = prices["discount_percent"] = None
     if market_status not in ("completed", "not_needed", "not_checked"):
         risks.append(f"market reference unavailable ({market_status})")
     risks += [f"condition: {c}" for c in offer.conditions]

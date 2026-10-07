@@ -16,6 +16,8 @@ use Illuminate\Database\Eloquent\Relations\HasOneThrough;
  * @property ?Store $store
  * @property ?float $price
  * @property ?float $original_price
+ * @property ?float $product_commission Affiliate commission, % of the price
+ * @property ?float $seller_commission Part of product_commission paid by the seller, %
  * @property ?float $unit_price
  * @property float $price_factor
  * @property Carbon $created_at
