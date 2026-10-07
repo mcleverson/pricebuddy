@@ -132,6 +132,29 @@ class ShoppingSearch(Agent):
             logging.exception("Shopping search failed: %s", report["error"])
             return report
 
+    def _request_results(self, messages: list[dict[str, Any]]):
+        """Request report_results and retry once after an invalid tool response."""
+        retry_messages = messages
+        for attempt in range(2):
+            try:
+                return self.llm_client.chat_completion(
+                    retry_messages,
+                    RESULTS_SCHEMA,
+                    timeout_seconds=self.remaining_seconds(),
+                    tool_choice={"type": "function", "function": {"name": "report_results"}},
+                )
+            except LLMClientError as exc:
+                if not getattr(exc, "retryable_tool_response", False) or attempt == 1:
+                    raise
+                logging.warning("LLM returned no usable tool call (attempt %d); retrying report_results: %s",
+                                attempt + 1, exc)
+                retry_messages = [
+                    *messages,
+                    {"role": "user", "content": (
+                        "Sua resposta anterior não seguiu o contrato. Responda agora exclusivamente "
+                        "com a chamada report_results e inclua results como um array JSON, mesmo que vazio.")},
+                ]
+
     def _collect(self, snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
         observed_urls = {link["url"] for link in snapshot.get("links", []) if isinstance(link, dict)}
         searched_at = datetime.now(timezone.utc).isoformat()
@@ -140,14 +163,10 @@ class ShoppingSearch(Agent):
         for segment, links in self._build_llm_page_segments(snapshot):
             if not self._can_continue() or len(results) >= MAX_RESULTS:
                 break
-            call = self.llm_client.chat_completion(
+            call = self._request_results(
                 [{"role": "system", "content": SEARCH_PROMPT},
                  {"role": "user", "content": json.dumps({"url": snapshot["url"], "text": segment, "links": links},
-                                                        ensure_ascii=False)}],
-                RESULTS_SCHEMA,
-                timeout_seconds=self.remaining_seconds(),
-                tool_choice={"type": "function", "function": {"name": "report_results"}},
-            )
+                                                        ensure_ascii=False)}])
             if call.name != "report_results" or not isinstance(call.arguments.get("results"), list):
                 raise LLMClientError("LLM returned an invalid report_results response")
             if call.arguments.get("blocked_reason"):
