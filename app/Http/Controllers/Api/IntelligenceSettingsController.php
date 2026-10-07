@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\NotificationMethods;
 use App\Http\Controllers\Controller;
+use App\Services\Helpers\NotificationsHelper;
 use App\Settings\AppSettings;
 use Dedoc\Scramble\Attributes\Group;
-use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Crypt;
 
 #[Group('Intelligence')]
 class IntelligenceSettingsController extends Controller
@@ -15,7 +15,8 @@ class IntelligenceSettingsController extends Controller
     /**
      * Settings > Intelligence, for the pricebuddy-intelligence service.
      *
-     * Blank fields are omitted so the service keeps its own defaults.
+     * Blank fields are omitted so the service keeps its own defaults. The
+     * Telegram bot is the one configured in Settings > Notifications.
      */
     public function __invoke(): JsonResponse
     {
@@ -24,12 +25,11 @@ class IntelligenceSettingsController extends Controller
             fn (mixed $value): bool => $value !== null && $value !== '',
         );
 
-        if (filled($settings['telegram_bot_token'] ?? null)) {
-            try {
-                $settings['telegram_bot_token'] = Crypt::decryptString($settings['telegram_bot_token']);
-            } catch (DecryptException) {
-                unset($settings['telegram_bot_token']);
-            }
+        unset($settings['telegram_bot_token'], $settings['telegram_enabled'], $settings['message_prompt']);
+
+        $botToken = NotificationsHelper::getSetting(NotificationMethods::Telegram, 'bot_token');
+        if (filled($botToken)) {
+            $settings['telegram_bot_token'] = $botToken;
         }
 
         return response()->json(['data' => $settings]);

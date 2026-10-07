@@ -1,8 +1,9 @@
 """Publication workflow: schedule, duplicate prevention, revalidation, send.
 
-Every send revalidates the offer against PriceBuddy right before it goes out:
-if the price went up, the offer stopped being a recommendation, or it was
-already published recently at the same price, the publication is cancelled.
+Publishing is a manual decision: the message is written and approved in
+PriceBuddy and sent exactly as approved. Every send still revalidates the
+offer against PriceBuddy right before it goes out: if the product is gone,
+has no current price or the price went up, the publication is cancelled.
 """
 
 from __future__ import annotations
@@ -13,12 +14,13 @@ from typing import Any
 
 from analysis import decision as rules
 from analysis.service import Analyzer, now_local
-from publishing.content import build_message
+from publishing.content import to_telegram_html
 from publishing.telegram import TelegramSender
 from store import Store
 
 PRICE_TOLERANCE = 0.01   # 1% price increase since the recommendation cancels the send
-SENDABLE = {rules.PUBLISH_NOW, rules.SCHEDULE, rules.REPOST}
+# wait_confirmation is publishable by hand: the user can check the market prices themselves.
+SENDABLE = {rules.PUBLISH_NOW, rules.SCHEDULE, rules.REPOST, rules.WAIT_CONFIRMATION}
 
 
 class PublicationError(ValueError):
@@ -32,12 +34,14 @@ class Publisher:
         self.sender = sender or TelegramSender()
 
     def _dry_run(self, settings: dict[str, Any]) -> bool:
-        configured = bool(settings.get("telegram_enabled") and settings.get("telegram_bot_token")
-                          and settings.get("telegram_chat_id"))
+        configured = bool(settings.get("telegram_bot_token") and settings.get("telegram_chat_id"))
         return bool(settings.get("dry_run", True)) or not configured
 
-    def create(self, product_id: int, scheduled_for: str | None = None) -> dict[str, Any]:
-        """Queue a publication; without scheduled_for it is sent right away."""
+    def create(self, product_id: int, message: str, scheduled_for: str | None = None,
+               image: str | None = None) -> dict[str, Any]:
+        """Queue the approved message; without scheduled_for it is sent right away."""
+        if not message.strip():
+            raise PublicationError("message is required")
         analysis = self.store.latest_analysis(product_id)
         if analysis is None:
             raise PublicationError("product has not been analyzed yet")
@@ -51,7 +55,7 @@ class Publisher:
         datetime.fromisoformat(when)  # validates the format
         publication_id = self.store.add_publication(
             product_id=product_id, channel="telegram", status="scheduled", price=analysis["prices"]["offer"],
-            message=build_message(analysis), scheduled_for=when, dry_run=int(self._dry_run(settings)),
+            message=message.strip(), image=image or None, scheduled_for=when, dry_run=int(self._dry_run(settings)),
             detail=None, created_at=now_local().isoformat(),
         )
         if when <= now_local().isoformat():
@@ -76,14 +80,12 @@ class Publisher:
         if reason:
             self.store.update_publication(publication_id, status="cancelled", detail=f"revalidation: {reason}")
             return self.store.publication(publication_id)
-        analysis = self.store.latest_analysis(publication["product_id"])
-        message = build_message(analysis)
         dry_run = self._dry_run(settings)
-        result = self.sender.send(message, bot_token=settings.get("telegram_bot_token", ""),
-                                  chat_id=str(settings.get("telegram_chat_id", "")), dry_run=dry_run)
+        result = self.sender.send(to_telegram_html(publication["message"]), bot_token=settings.get("telegram_bot_token", ""),
+                                  chat_id=str(settings.get("telegram_chat_id", "")), dry_run=dry_run,
+                                  image=publication.get("image"))
         status = ("dry_run" if dry_run else "sent") if result.get("ok") else "failed"
-        self.store.update_publication(publication_id, status=status, message=message, dry_run=int(dry_run),
-                                      price=analysis["prices"]["offer"],
+        self.store.update_publication(publication_id, status=status, dry_run=int(dry_run),
                                       published_at=now_local().isoformat() if result.get("ok") else None,
                                       detail=result.get("error"))
         return self.store.publication(publication_id)
@@ -98,8 +100,6 @@ class Publisher:
             return "product has no current price"
         if fresh["prices"]["offer"] > publication["price"] * (1 + PRICE_TOLERANCE):
             return f"price went up from {publication['price']:.2f} to {fresh['prices']['offer']:.2f}"
-        if fresh["action"] not in SENDABLE:
-            return f"offer is now '{fresh['action']}': {'; '.join(fresh['reasons'][:1])}"
         return None
 
     def process_due(self) -> list[dict[str, Any]]:

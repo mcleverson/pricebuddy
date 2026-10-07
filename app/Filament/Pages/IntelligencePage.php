@@ -2,7 +2,13 @@
 
 namespace App\Filament\Pages;
 
+use App\Enums\NotificationMethods;
+use App\Exceptions\AiProviderException;
+use App\Services\Helpers\AffiliateHelper;
+use App\Services\Helpers\NotificationsHelper;
+use App\Services\Intelligence\OfferMessage;
 use App\Services\Intelligence\PublicationStatus;
+use App\Settings\AppSettings;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Http\Client\ConnectionException;
@@ -48,8 +54,19 @@ class IntelligencePage extends Page
 
     public ?string $error = null;
 
-    /** @var array<int, string> */
-    public array $scheduleAt = [];
+    /** Publish modal: the product being published, what to create and the editable message. */
+    public ?int $composeProductId = null;
+
+    public ?string $composeKind = null;
+
+    public string $composeMessage = '';
+
+    /** Purchase link used in the message; for Mercado Livre the user pastes the official affiliate link. */
+    public string $composeLink = '';
+
+    public ?string $composeImage = null;
+
+    public ?string $composeScheduleAt = null;
 
     public function mount(): void
     {
@@ -82,17 +99,69 @@ class IntelligencePage extends Page
         $this->refresh();
     }
 
-    public function publish(int $productId, bool $schedule = false): void
+    public function compose(int $productId): void
     {
-        $body = ['product_id' => $productId];
+        $item = $this->item($productId);
+        $this->composeProductId = $productId;
+        $this->composeKind = null;
+        $this->composeMessage = '';
+        $this->composeLink = $this->purchaseLink((string) ($item['url'] ?? ''));
+        $this->composeImage = $item['image'] ?? null;
+        $this->composeScheduleAt = filled($item['scheduled_for'] ?? null) ? substr($item['scheduled_for'], 0, 16) : null;
+        $this->dispatch('open-modal', id: 'compose-publication');
+    }
+
+    public function generateMessage(): void
+    {
+        $this->composeKind = 'message';
+        $item = $this->item((int) $this->composeProductId);
+        if ($item === null) {
+            return;
+        }
+        try {
+            $this->composeMessage = OfferMessage::generate([...$item, 'url' => $this->composeLink]);
+        } catch (AiProviderException $e) {
+            Notification::make()->title('Could not write the message')->body($e->getMessage())->danger()->send();
+        }
+    }
+
+    /**
+     * A link pasted after the message was written replaces the old one in the text.
+     */
+    public function updatingComposeLink(string $value): void
+    {
+        if (filled($this->composeLink) && filled($value) && str_contains($this->composeMessage, $this->composeLink)) {
+            $this->composeMessage = str_replace($this->composeLink, trim($value), $this->composeMessage);
+        }
+    }
+
+    /**
+     * Mercado Livre affiliate links only exist through its "Compartilhar" button,
+     * so the user pastes it into the publish modal. The notice stays until a meli.la link is in.
+     */
+    public function needsAffiliateLink(): bool
+    {
+        $productHost = (string) parse_url((string) ($this->item((int) $this->composeProductId)['url'] ?? ''), PHP_URL_HOST);
+
+        return str_contains($productHost, 'mercadolivre.com') && parse_url($this->composeLink, PHP_URL_HOST) !== 'meli.la';
+    }
+
+    public function publish(bool $schedule = false): void
+    {
+        if (blank($this->composeMessage)) {
+            Notification::make()->title('Write the message first')->warning()->send();
+
+            return;
+        }
+        $body = ['product_id' => $this->composeProductId, 'message' => $this->composeMessage, 'image' => $this->composeImage];
         if ($schedule) {
-            if (blank($this->scheduleAt[$productId] ?? null)) {
+            if (blank($this->composeScheduleAt)) {
                 Notification::make()->title('Choose when to publish')->warning()->send();
 
                 return;
             }
             // The browser picker gives local (Brazil) time, the service compares in the same zone.
-            $body['scheduled_for'] = Carbon::parse($this->scheduleAt[$productId], 'America/Sao_Paulo')->toIso8601String();
+            $body['scheduled_for'] = Carbon::parse($this->composeScheduleAt, 'America/Sao_Paulo')->toIso8601String();
         }
         $response = $this->call('post', '/v1/publications', $body);
         PublicationStatus::forget();
@@ -102,8 +171,50 @@ class IntelligencePage extends Page
                 ->body($response['data']['detail'] ?? null)
                 ->color(in_array($status, ['sent', 'dry_run', 'scheduled'], true) ? 'success' : 'warning')
                 ->send();
+            $this->dispatch('close-modal', id: 'compose-publication');
         }
         $this->refresh();
+    }
+
+    /**
+     * Where "Publish" sends to, for the notice in the modal. Only Telegram exists today.
+     *
+     * @return array{channel: string, chat_id: ?string, ready: bool, dry_run: bool}
+     */
+    public function publishTarget(): array
+    {
+        $settings = AppSettings::new()->intelligence_settings;
+        $chatId = data_get($settings, 'telegram_chat_id');
+        $ready = filled($chatId) && filled(NotificationsHelper::getSetting(NotificationMethods::Telegram, 'bot_token'));
+
+        return [
+            'channel' => 'Telegram',
+            'chat_id' => $chatId,
+            'ready' => $ready,
+            'dry_run' => (bool) data_get($settings, 'dry_run', true) || ! $ready,
+        ];
+    }
+
+    /**
+     * Amazon: the canonical /dp/ASIN link with the associate tag is short and still
+     * official, unlike the product page link full of tracking parameters.
+     */
+    protected function purchaseLink(string $url): string
+    {
+        $host = (string) parse_url($url, PHP_URL_HOST);
+        if (str_contains($host, 'amazon.') && preg_match('#/(?:dp|gp/product)/([A-Z0-9]{10})#', $url, $match)) {
+            return AffiliateHelper::new()->parseUrl("https://{$host}/dp/{$match[1]}");
+        }
+
+        return $url;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    protected function item(int $productId): ?array
+    {
+        return collect($this->items)->firstWhere('product_id', $productId);
     }
 
     public function cancel(int $publicationId): void

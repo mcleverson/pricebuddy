@@ -95,7 +95,8 @@ def decide(offer: Offer, references: list[Reference], *, last_publication: dict[
     }
 
     if offer.original_price and offer.history and offer.original_price > max(offer.history.values()) * 1.5:
-        risks.append("'De' price is far above any price recorded for this product")
+        risks.append(f"store's original price {offer.original_price:.2f} is over 1.5x the highest price ever "
+                     f"recorded ({max(offer.history.values()):.2f})")
     if market_status not in ("completed", "not_needed", "not_checked"):
         risks.append(f"market reference unavailable ({market_status})")
     risks += [f"condition: {c}" for c in offer.conditions]

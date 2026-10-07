@@ -34,7 +34,7 @@ class AppSettings extends Settings
 
     /**
      * Read by pricebuddy-intelligence through GET /api/intelligence/settings.
-     * telegram_bot_token is stored encrypted.
+     * message_prompt is used by PriceBuddy itself to write the offer message.
      */
     public array $intelligence_settings = [];
 

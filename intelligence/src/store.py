@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS publications (
     status TEXT NOT NULL,            -- scheduled | sent | dry_run | cancelled | failed
     price REAL NOT NULL,
     message TEXT NOT NULL,
+    image TEXT,
     scheduled_for TEXT NOT NULL,
     published_at TEXT,
     dry_run INTEGER NOT NULL,
@@ -48,6 +49,10 @@ class Store:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        # Databases created before publications had an image.
+        if "image" not in {row["name"] for row in self._db.execute("PRAGMA table_info(publications)")}:
+            self._db.execute("ALTER TABLE publications ADD COLUMN image TEXT")
+            self._db.commit()
 
     def _exec(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         with self._lock:

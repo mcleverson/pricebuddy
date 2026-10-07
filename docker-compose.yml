@@ -7,6 +7,8 @@ services:
         image: jez500/pricebuddy:latest
         ports:
             - 8080:80
+        extra_hosts:
+            - "host.docker.internal:host-gateway"   # AI provider (OmniRoute) running on the host
         volumes:
             - storage:/app/storage
             - ./.env:/app/.env

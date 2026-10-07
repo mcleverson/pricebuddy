@@ -1,28 +1,22 @@
-"""Fixed message layout for a publication. No generated or suggested copy:
-only the offer's own facts, as read from PriceBuddy at send time."""
+"""Message formatting for publication channels. The text itself is written
+(and approved) in PriceBuddy; here it is only adapted to the channel."""
 
 from __future__ import annotations
 
 import html
-from typing import Any
+import re
+
+# WhatsApp markup used by the approved message: *bold* and ~strikethrough~.
+_BOLD = re.compile(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])")
+_STRIKE = re.compile(r"(?<![\w~])~(?=\S)([^~\n]+?)(?<=\S)~(?![\w~])")
+_URL = re.compile(r"(https?://\S+)")
 
 
-def _brl(value: float) -> str:
-    return "R$ " + f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def build_message(analysis: dict[str, Any]) -> str:
-    prices = analysis["prices"]
-    lines = [f"<b>{html.escape(analysis['title'])}</b>", ""]
-    if prices.get("original") and prices.get("discount_percent"):
-        lines.append(f"De <s>{_brl(prices['original'])}</s> por <b>{_brl(prices['offer'])}</b> "
-                     f"(-{prices['discount_percent']:.0f}%)")
-    else:
-        lines.append(f"Por <b>{_brl(prices['offer'])}</b>")
-    if analysis.get("store"):
-        lines.append(f"Loja: {html.escape(analysis['store'])}")
-    for condition in analysis.get("conditions") or []:
-        lines.append(html.escape(condition))
-    if analysis.get("url"):
-        lines += ["", html.escape(analysis["url"])]
-    return "\n".join(lines)
+def to_telegram_html(text: str) -> str:
+    """Escape the message for Telegram's HTML parse mode, keeping WhatsApp bold/strike.
+    Links are left untouched so affiliate parameters are never altered."""
+    parts = _URL.split(text)
+    for i, part in enumerate(parts):
+        escaped = html.escape(part, quote=False)
+        parts[i] = escaped if i % 2 else _STRIKE.sub(r"<s>\1</s>", _BOLD.sub(r"<b>\1</b>", escaped))
+    return "".join(parts)

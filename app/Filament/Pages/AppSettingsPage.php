@@ -18,6 +18,7 @@ use App\Services\Helpers\CurrencyHelper;
 use App\Services\Helpers\IntegrationHelper;
 use App\Services\Helpers\LocaleHelper;
 use App\Services\Helpers\ScheduleHelper;
+use App\Services\Intelligence\OfferMessage;
 use App\Services\OllamaService;
 use App\Settings\AppSettings;
 use Filament\Forms\Components\Actions\Action;
@@ -130,19 +131,6 @@ class AppSettingsPage extends SettingsPage
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
-        // Intelligence telegram token: encrypt a new value, keep the stored one when left blank.
-        $token = data_get($data, 'intelligence_settings.telegram_bot_token');
-        if (filled($token)) {
-            try {
-                Crypt::decryptString($token);
-            } catch (DecryptException) {
-                data_set($data, 'intelligence_settings.telegram_bot_token', Crypt::encryptString($token));
-            }
-        } else {
-            data_set($data, 'intelligence_settings.telegram_bot_token',
-                data_get(AppSettings::new()->toArray(), 'intelligence_settings.telegram_bot_token'));
-        }
-
         $existingProviders = collect(
             data_get(AppSettings::new()->toArray(), 'integrated_services.ai.providers', [])
         );
@@ -449,25 +437,23 @@ class AppSettingsPage extends SettingsPage
                 $number('duplicate_window_hours', 'Duplicate window (hours)', 'The same offer is not published twice within this window.', 24),
             ])->columns(2),
 
-            self::makeSettingsHeading('Publishing', __('Telegram channel used when an offer is published')),
+            self::makeSettingsHeading('Publishing', __('Offers are published to Telegram with the bot from Notifications > Telegram')),
             Group::make([
                 $number('posting_start_hour', 'Posting starts at (hour)', 'Offers approved outside posting hours are scheduled.', 8)->maxValue(23),
                 $number('posting_end_hour', 'Posting ends at (hour)', 'Offers approved outside posting hours are scheduled.', 22)->maxValue(24),
-                TextInput::make('telegram_bot_token')
-                    ->label('Telegram bot token')
-                    ->password()
-                    ->placeholder('Leave blank to keep the saved token')
-                    ->hintIcon(Icons::Help->value, 'Stored encrypted. Create a bot with @BotFather and add it to the group as admin.'),
                 TextInput::make('telegram_chat_id')
                     ->label('Telegram chat id')
-                    ->hintIcon(Icons::Help->value, 'Group or channel id (e.g. -1001234567890) or @channel_username.'),
-                \Filament\Forms\Components\Toggle::make('telegram_enabled')
-                    ->label('Telegram enabled'),
+                    ->hintIcon(Icons::Help->value, 'Group or channel id (e.g. -1001234567890) or @channel_username. Add the Notifications bot to it as admin.'),
                 \Filament\Forms\Components\Toggle::make('dry_run')
                     ->label('Dry-run (do not send)')
                     ->afterStateHydrated(fn (\Filament\Forms\Components\Toggle $component, $state) => $component->state($state ?? true))
                     ->hintIcon(Icons::Help->value, 'While on, publications are recorded but never sent.'),
             ])->columns(2),
+            \Filament\Forms\Components\Textarea::make('message_prompt')
+                ->label('Offer message prompt')
+                ->rows(16)
+                ->afterStateHydrated(fn (\Filament\Forms\Components\Textarea $component, $state) => $component->state(filled($state) ? $state : OfferMessage::DEFAULT_PROMPT))
+                ->hintIcon(Icons::Help->value, 'Used by the AI provider to write the message when you publish. '.OfferMessage::PLACEHOLDER.' is replaced by the offer data.'),
         ])->statePath('intelligence_settings');
     }
 

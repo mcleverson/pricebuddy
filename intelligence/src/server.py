@@ -59,9 +59,10 @@ class App:
         if method == "GET" and path == "/v1/publications":
             return 200, {"data": self.store.publications()}
         if method == "POST" and path == "/v1/publications":
-            if not isinstance(body.get("product_id"), int):
-                return 422, {"error": "product_id (integer) is required"}
-            return 201, {"data": self.publisher.create(body["product_id"], body.get("scheduled_for"))}
+            if not isinstance(body.get("product_id"), int) or not isinstance(body.get("message"), str):
+                return 422, {"error": "product_id (integer) and message (string) are required"}
+            return 201, {"data": self.publisher.create(body["product_id"], body["message"], body.get("scheduled_for"),
+                                                       body.get("image"))}
         if match := re.fullmatch(r"/v1/publications/(\d+)/cancel", path):
             if method == "POST":
                 return 200, {"data": self.publisher.cancel(int(match.group(1)))}

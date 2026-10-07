@@ -29,7 +29,6 @@ DEFAULT_SETTINGS = {
     "repost_min_drop_percent": 5.0,
     "duplicate_window_hours": 24,
     "auto_run_interval_minutes": 0,
-    "telegram_enabled": False,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "dry_run": True,

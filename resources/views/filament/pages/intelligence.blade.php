@@ -4,7 +4,8 @@
         'wait_confirmation' => 'warning', 'monitor' => 'gray', 'ignore' => 'danger',
     ];
     $brl = fn ($value) => $value === null ? '—' : 'R$ '.number_format((float) $value, 2, ',', '.');
-    $publishable = ['publish_now', 'schedule', 'repost'];
+    // wait_confirmation can be published by hand: the user checks the market prices.
+    $publishable = ['publish_now', 'schedule', 'repost', 'wait_confirmation'];
 @endphp
 <x-filament-panels::page>
     <div x-data="{ tab: 'today' }">
@@ -98,11 +99,7 @@
                         </div>
                         <div class="flex md:flex-col gap-2 md:w-56">
                             @if (in_array($item['action'], $publishable, true))
-                                <x-filament::button size="sm" icon="heroicon-m-paper-airplane" wire:click="publish({{ $item['product_id'] }})">{{ __('Publish now') }}</x-filament::button>
-                                <input type="datetime-local" wire:model="scheduleAt.{{ $item['product_id'] }}"
-                                       class="text-sm rounded-md border-gray-300 dark:bg-gray-900 dark:border-white/10"
-                                       value="{{ $item['scheduled_for'] ? substr($item['scheduled_for'], 0, 16) : '' }}">
-                                <x-filament::button size="sm" color="gray" icon="heroicon-m-clock" wire:click="publish({{ $item['product_id'] }}, true)">{{ __('Schedule') }}</x-filament::button>
+                                <x-filament::button size="sm" icon="heroicon-m-paper-airplane" wire:click="compose({{ $item['product_id'] }})">{{ __('Publish') }}</x-filament::button>
                             @endif
                             <x-filament::button size="sm" color="gray" icon="heroicon-m-arrow-path" wire:click="analyze({{ $item['product_id'] }})">{{ __('Re-analyze') }}</x-filament::button>
                             <span class="text-xs text-gray-500">{{ __('Analyzed') }} {{ \Illuminate\Support\Carbon::parse($item['analyzed_at'])->format('d/m H:i') }}</span>
@@ -147,4 +144,77 @@
             </x-filament::section>
         </div>
     </div>
+
+    @php($target = $this->publishTarget())
+    <x-filament::modal id="compose-publication" width="2xl">
+        <x-slot name="heading">{{ __('Publish') }}</x-slot>
+        @if ($composeProductId)
+            <x-slot name="description">{{ collect($items)->firstWhere('product_id', $composeProductId)['title'] ?? '' }}</x-slot>
+        @endif
+
+        <div class="flex flex-col gap-2 mb-2">
+            <label class="text-sm font-medium">{{ __('Purchase link') }}</label>
+            <input type="url" wire:model.blur="composeLink"
+                   class="w-full text-sm rounded-md border-gray-300 dark:bg-gray-900 dark:border-white/10">
+            @if ($this->needsAffiliateLink())
+                <div class="text-sm rounded-md p-2 bg-warning-50 text-warning-700 dark:bg-warning-500/10 dark:text-warning-400">
+                    {{ __('Mercado Livre: this is the plain product link. Open the product, click "Compartilhar" in the affiliate bar and paste the meli.la link here.') }}
+                </div>
+            @endif
+        </div>
+
+        <div class="flex gap-2">
+            <x-filament::button size="sm" :color="$composeKind === 'message' ? 'primary' : 'gray'" icon="heroicon-m-chat-bubble-left-right" wire:click="generateMessage">
+                {{ $composeKind === 'message' ? __('Rewrite message') : __('Message') }}
+            </x-filament::button>
+            <x-filament::button size="sm" :color="$composeKind === 'video' ? 'primary' : 'gray'" icon="heroicon-m-video-camera" wire:click="$set('composeKind', 'video')">
+                {{ __('Video') }}
+            </x-filament::button>
+        </div>
+
+        <div wire:loading wire:target="generateMessage" class="text-sm text-gray-500">{{ __('Writing the message…') }}</div>
+
+        @if ($composeKind === 'message')
+            <div wire:loading.remove wire:target="generateMessage" class="flex flex-col gap-3"
+                 x-data="{ copied: false, copy() {
+                     const text = $refs.message.value;
+                     const done = () => { this.copied = true; setTimeout(() => this.copied = false, 2000) };
+                     if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done) }
+                     else { $refs.message.select(); document.execCommand('copy'); done() }
+                 } }">
+                @if ($composeImage)
+                    <div class="flex items-end gap-3">
+                        <img src="{{ $composeImage }}" alt="" class="w-32 h-32 object-contain rounded-md bg-white">
+                        <a href="{{ $composeImage }}" target="_blank" rel="noopener" class="text-sm text-primary-600 hover:underline">{{ __('Open image to save') }}</a>
+                    </div>
+                @endif
+                <textarea x-ref="message" wire:model="composeMessage" rows="14"
+                          class="w-full text-sm font-mono rounded-md border-gray-300 dark:bg-gray-900 dark:border-white/10"></textarea>
+
+                <div @class(['text-sm rounded-md p-2', 'bg-info-50 text-info-700 dark:bg-info-500/10 dark:text-info-400' => ! $target['dry_run'], 'bg-warning-50 text-warning-700 dark:bg-warning-500/10 dark:text-warning-400' => $target['dry_run']])>
+                    {{ $composeImage ? __('Publish sends the image and this message to') : __('Publish sends this message to') }} <b>{{ $target['channel'] }}</b>@if ($target['chat_id']) ({{ $target['chat_id'] }})@endif.
+                    @if (! $target['ready'])
+                        {{ __('Telegram is not set up (bot token in Notifications > Telegram, chat id in Settings > Intelligence): it will only be recorded.') }}
+                    @elseif ($target['dry_run'])
+                        {{ __('Dry-run is on: it will only be recorded, not sent.') }}
+                    @endif
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                    <x-filament::button size="sm" color="gray" icon="heroicon-m-clipboard-document" x-on:click="copy()">
+                        <span x-text="copied ? '{{ __('Copied') }}' : '{{ __('Copy') }}'"></span>
+                    </x-filament::button>
+                    <x-filament::button size="sm" icon="heroicon-m-paper-airplane" wire:click="publish">{{ __('Publish to Telegram') }}</x-filament::button>
+                    <input type="datetime-local" wire:model="composeScheduleAt"
+                           class="text-sm rounded-md border-gray-300 dark:bg-gray-900 dark:border-white/10">
+                    <x-filament::button size="sm" color="gray" icon="heroicon-m-clock" wire:click="publish(true)">{{ __('Schedule') }}</x-filament::button>
+                </div>
+            </div>
+        @elseif ($composeKind === 'video')
+            <div class="flex items-center justify-center h-48 rounded-md border border-dashed border-gray-300 dark:border-white/10 text-sm text-gray-500">
+                <x-filament::icon icon="heroicon-o-video-camera" class="w-6 h-6 mr-2" />
+                {{ __('Video generation is coming soon.') }}
+            </div>
+        @endif
+    </x-filament::modal>
 </x-filament-panels::page>
