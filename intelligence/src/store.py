@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS publications (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS publications_product ON publications (product_id, status);
+CREATE TABLE IF NOT EXISTS selections (
+    product_id INTEGER PRIMARY KEY,  -- products the user picked for analysis ("My Product Selection")
+    added_at TEXT NOT NULL
+);
 """
 
 
@@ -86,6 +90,17 @@ class Store:
     def record_search(self, day: str, query: str, status: str, searched_at: str) -> None:
         self._exec("INSERT INTO market_searches (day, query, status, searched_at) VALUES (?, ?, ?, ?)",
                    (day, query, status, searched_at))
+
+    # selection
+    def add_selection(self, product_ids: list[int], added_at: str) -> None:
+        for product_id in product_ids:
+            self._exec("INSERT OR IGNORE INTO selections (product_id, added_at) VALUES (?, ?)", (product_id, added_at))
+
+    def remove_selection(self, product_id: int) -> None:
+        self._exec("DELETE FROM selections WHERE product_id = ?", (product_id,))
+
+    def selection(self) -> list[int]:
+        return [row["product_id"] for row in self._all("SELECT product_id FROM selections ORDER BY added_at DESC")]
 
     # publications
     def add_publication(self, **row: Any) -> int:

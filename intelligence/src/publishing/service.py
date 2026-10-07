@@ -62,6 +62,21 @@ class Publisher:
             return self.send(publication_id)
         return self.store.publication(publication_id)
 
+    def record_sent(self, product_id: int, message: str, channel: str, image: str | None = None) -> dict[str, Any]:
+        """A message the user sent by hand (e.g. pasted in WhatsApp), recorded as published now."""
+        if not message.strip():
+            raise PublicationError("message is required")
+        analysis = self.store.latest_analysis(product_id)
+        if analysis is None:
+            raise PublicationError("product has not been analyzed yet")
+        now = now_local().isoformat()
+        publication_id = self.store.add_publication(
+            product_id=product_id, channel=channel, status="sent", price=analysis["prices"]["offer"],
+            message=message.strip(), image=image or None, scheduled_for=now, published_at=now, dry_run=0,
+            detail="sent manually", created_at=now,
+        )
+        return self.store.publication(publication_id)
+
     def cancel(self, publication_id: int, reason: str = "cancelled by user") -> dict[str, Any]:
         publication = self.store.publication(publication_id)
         if publication is None:

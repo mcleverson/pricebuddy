@@ -22,14 +22,14 @@ class App:
         self.run_lock = threading.Lock()
         self.last_run: dict[str, Any] = {"status": "idle"}
 
-    def start_run(self, limit: int | None = None) -> bool:
+    def start_run(self, limit: int | None = None, scope: str = "window") -> bool:
         if not self.run_lock.acquire(blocking=False):
             return False
 
         def work() -> None:
             self.last_run = {"status": "running", "started_at": now_local().isoformat()}
             try:
-                summary = self.analyzer.run_batch(limit)
+                summary = self.analyzer.run_selection() if scope == "selection" else self.analyzer.run_batch(limit)
                 self.last_run = {"status": "completed", "started_at": self.last_run["started_at"],
                                  "finished_at": now_local().isoformat(), **summary}
             except Exception as exc:  # noqa: BLE001 - surfaced through GET /v1/runs/latest
@@ -47,8 +47,20 @@ class App:
         if method == "GET" and path == "/v1/today":
             return 200, self.analyzer.today()
         if method == "POST" and path == "/v1/runs":
-            started = self.start_run(body.get("limit"))
+            started = self.start_run(body.get("limit"), "selection" if body.get("scope") == "selection" else "window")
             return (202, {"status": "started"}) if started else (409, {"error": "an analysis run is already active"})
+        if method == "GET" and path == "/v1/selection":
+            return 200, self.analyzer.selection()
+        if method == "POST" and path == "/v1/selection":
+            ids = body.get("product_ids")
+            if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+                return 422, {"error": "product_ids (list of integers) is required"}
+            self.store.add_selection(ids, now_local().isoformat())
+            return 200, {"data": self.store.selection()}
+        if match := re.fullmatch(r"/v1/selection/(\d+)/remove", path):
+            if method == "POST":
+                self.store.remove_selection(int(match.group(1)))
+                return 200, {"data": self.store.selection()}
         if method == "GET" and path == "/v1/runs/latest":
             return 200, {"data": self.last_run}
         if method == "GET" and path == "/v1/settings":
@@ -63,6 +75,12 @@ class App:
                 return 422, {"error": "product_id (integer) and message (string) are required"}
             return 201, {"data": self.publisher.create(body["product_id"], body["message"], body.get("scheduled_for"),
                                                        body.get("image"))}
+        if method == "POST" and path == "/v1/publications/manual":
+            if not isinstance(body.get("product_id"), int) or not isinstance(body.get("message"), str) \
+                    or not isinstance(body.get("channel"), str):
+                return 422, {"error": "product_id (integer), message and channel (strings) are required"}
+            return 201, {"data": self.publisher.record_sent(body["product_id"], body["message"], body["channel"],
+                                                            body.get("image"))}
         if match := re.fullmatch(r"/v1/publications/(\d+)/cancel", path):
             if method == "POST":
                 return 200, {"data": self.publisher.cancel(int(match.group(1)))}

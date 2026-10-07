@@ -13,7 +13,6 @@ class ProductCardColumn extends Column
     {
         $this->viewData([
             'product' => $this->getRecord(),
-            'standalone' => true,
         ]);
 
         return parent::render();

@@ -325,6 +325,20 @@ class Product extends Model
         });
     }
 
+    /**
+     * Products whose cheapest store shows at least this discount over its
+     * original price. Same math as PriceCacheDto::getDiscountPercentage().
+     */
+    public function scopeMinDiscount(EloquentBuilder $query, int $percent): EloquentBuilder
+    {
+        $original = "CAST(JSON_UNQUOTE(JSON_EXTRACT(price_cache, '$[0].original_price')) AS DECIMAL(12,2))";
+        $current = "CAST(JSON_UNQUOTE(JSON_EXTRACT(price_cache, '$[0].unit_price')) AS DECIMAL(12,2))";
+
+        return $query
+            ->whereRaw("{$original} > 0 AND {$current} > 0")
+            ->whereRaw("ROUND(({$original} - {$current}) / {$original} * 100) >= ?", [$percent]);
+    }
+
     /***************************************************
      * Attributes.
      **************************************************/

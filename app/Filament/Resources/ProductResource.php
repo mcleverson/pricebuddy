@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Enums\Icons;
 use App\Enums\Statuses;
+use App\Filament\Resources\ProductResource\Actions\AddToSelectionBulkAction;
 use App\Filament\Resources\ProductResource\Actions\FetchBulkAction;
 use App\Filament\Resources\ProductResource\Actions\PauseBulkAction;
 use App\Filament\Resources\ProductResource\Actions\ResumeBulkAction;
@@ -15,6 +16,7 @@ use App\Models\Tag;
 use App\Providers\Filament\AdminPanelProvider;
 use App\Rules\StoreUrl;
 use App\Services\Helpers\CurrencyHelper;
+use App\Services\Intelligence\PublicationStatus;
 use Filament\Forms;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Select;
@@ -22,16 +24,12 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Support\Colors\Color;
-use Filament\Support\Enums\FontWeight;
 use Filament\Tables;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\HtmlString;
-use Illuminate\Support\Str;
-use Illuminate\View\ComponentAttributeBag;
 
 class ProductResource extends Resource
 {
@@ -285,47 +283,14 @@ class ProductResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            // Same card as the home dashboard, in a grid; the record checkbox stays for bulk actions.
             ->columns([
-                Tables\Columns\Layout\Split::make([
-                    Tables\Columns\Layout\Split::make([
-                        Tables\Columns\ImageColumn::make('primary_image')
-                            ->width(60)
-                            ->height(60)
-                            ->extraImgAttributes([
-                                'class' => 'rounded-md p-1 bg-white mr-2',
-                                'onerror' => "this.onerror=null;this.src='/images/placeholder.png';",
-                            ])
-                            ->label('Image')
-                            ->url(fn ($record): string => $record->action_urls['view'])
-                            ->grow(false),
-
-                        Tables\Columns\Layout\Stack::make([
-                            TextColumn::make('title')
-                                ->searchable()
-                                ->formatStateUsing(fn ($state): HtmlString => new HtmlString('<span title="'.$state.'">'.Str::limit($state, 50).'</span>'))
-                                ->sortable()
-                                ->weight(FontWeight::Bold)
-                                ->extraAttributes(['class' => 'pr-4 min-w-40'])
-                                ->url(fn (Product $record): string => $record->action_urls['view']),
-
-                            Tables\Columns\ViewColumn::make('badges')
-                                ->view('components.product-badges')
-                                ->viewData(['attributes' => new ComponentAttributeBag(['class' => 'flex md:gap-3 flex-col md:flex-row'])]),
-
-                            TextColumn::make('tags')
-                                ->color(Color::Gray)
-                                ->formatStateUsing(fn ($record): string => $record->tags->pluck('name')->join(', '))
-                                ->label('Tags')
-                                ->url(null)
-                                ->grow(false)
-                                ->extraAttributes(['class' => 'mt-2 text-xs']),
-                        ]),
-                    ])->extraAttributes(['class' => 'max-w-md mb-2']),
-
-                    ProductCardColumn::make('product_card')
-                        ->label('Detail'),
-                ])->extraAttributes(['class' => 'w-full'])->from('sm'),
+                ProductCardColumn::make('title')
+                    ->label('Product')
+                    ->searchable()
+                    ->sortable(),
             ])
+            ->contentGrid(['md' => 2, 'xl' => 3])
             ->filters([
                 SelectFilter::make('status')
                     ->options(Statuses::class)
@@ -355,7 +320,43 @@ class ProductResource extends Resource
                     ->placeholder('All')
                     ->trueLabel('Paused only')
                     ->falseLabel('Active only'),
+                SelectFilter::make('min_discount')
+                    ->label('Discount')
+                    ->placeholder('Any')
+                    ->options(['10' => '10% or more', '20' => '20% or more', '30' => '30% or more', '50' => '50% or more'])
+                    ->query(function (Builder $query, array $data): void {
+                        if (filled($data['value'])) {
+                            $query->minDiscount((int) $data['value']);
+                        }
+                    }),
+                SelectFilter::make('publication')
+                    ->label('Publication')
+                    ->placeholder('All')
+                    ->options(['published' => 'Published', 'in_queue' => 'In queue', 'not_published' => 'Not published'])
+                    ->query(function (Builder $query, array $data): void {
+                        if (filled($data['value'])) {
+                            $ids = PublicationStatus::productIds($data['value'] === 'not_published' ? null : $data['value']);
+                            $data['value'] === 'not_published' ? $query->whereNotIn('id', $ids) : $query->whereIn('id', $ids);
+                        }
+                    }),
+                Tables\Filters\Filter::make('imported')
+                    ->form([
+                        Forms\Components\DatePicker::make('from')->label('Imported from'),
+                        Forms\Components\DatePicker::make('until')->label('Imported until'),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query
+                        ->when($data['from'] ?? null, fn (Builder $q, string $date) => $q->whereDate('created_at', '>=', $date))
+                        ->when($data['until'] ?? null, fn (Builder $q, string $date) => $q->whereDate('created_at', '<=', $date))),
+                Tables\Filters\Filter::make('price')
+                    ->form([
+                        TextInput::make('min')->label('Min price')->numeric(),
+                        TextInput::make('max')->label('Max price')->numeric(),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query
+                        ->when($data['min'] ?? null, fn (Builder $q, $min) => $q->where('current_price', '>=', $min))
+                        ->when($data['max'] ?? null, fn (Builder $q, $max) => $q->where('current_price', '<=', $max))),
             ])
+            ->filtersFormColumns(2)
             ->paginated(AdminPanelProvider::DEFAULT_PAGINATION)
             ->defaultSort('created_at', 'desc')
             ->actions([
@@ -364,6 +365,7 @@ class ProductResource extends Resource
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     FetchBulkAction::make(),
+                    AddToSelectionBulkAction::make(),
                     PauseBulkAction::make(),
                     ResumeBulkAction::make(),
                     Tables\Actions\DeleteBulkAction::make(),

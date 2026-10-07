@@ -40,6 +40,21 @@ class PublicationStatus
         });
     }
 
+    /**
+     * Product ids in a state: 'published' (sent or dry-run) or 'in_queue';
+     * null for every product that has any publication state.
+     *
+     * @return array<int, int>
+     */
+    public static function productIds(?string $state): array
+    {
+        return collect(self::all())
+            ->filter(fn (array $publication): bool => $state === null || str_starts_with($publication['status'], $state))
+            ->keys()
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+    }
+
     public static function forget(): void
     {
         Cache::forget(self::CACHE_KEY);

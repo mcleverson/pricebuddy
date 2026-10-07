@@ -187,6 +187,26 @@ class Analyzer:
             summary[result["action"]] = summary.get(result["action"], 0) + 1
         return {"window_start": start.isoformat(), "in_window": len(window), "analyzed": len(pending), "actions": summary}
 
+    def run_selection(self) -> dict[str, Any]:
+        """Analyze every product in the user's selection, even if already analyzed today."""
+        settings = self.settings()
+        selected = set(self.store.selection())
+        catalogue = list(self.pricebuddy.products())
+        products = [p for p in catalogue if p["id"] in selected]
+        results = [self.analyze(product, catalogue, settings) for product in products]
+        summary: dict[str, int] = {}
+        for result in filter(None, results):
+            summary[result["action"]] = summary.get(result["action"], 0) + 1
+        return {"scope": "selection", "selected": len(selected), "analyzed": len(products), "actions": summary}
+
+    def selection(self) -> dict[str, Any]:
+        """Latest analysis of each selected product; the ones never analyzed are listed as pending."""
+        selected = self.store.selection()
+        analyses = [a for a in (self.store.latest_analysis(pid) for pid in selected) if a]
+        analyzed = {a["product_id"] for a in analyses}
+        return {"data": sorted(analyses, key=rules.priority),
+                "meta": {"selected": len(selected), "pending": [pid for pid in selected if pid not in analyzed]}}
+
     def today(self) -> dict[str, Any]:
         """Latest analysis of each product imported in the window, plus how many
         products of the window still wait for an analysis."""
