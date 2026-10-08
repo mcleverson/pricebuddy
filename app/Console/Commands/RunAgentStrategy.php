@@ -6,13 +6,17 @@ use App\Enums\AccessMode;
 use App\Enums\ProductDataOperation;
 use App\Models\Store;
 use App\Models\Tag;
+use App\Models\User;
 use App\Services\ProductData\ApiProviderRegistry;
 use App\Services\ProductData\MarketplaceRegistry;
 use App\Services\Scraping\MarketplaceStrategyResolver;
+use Filament\Notifications\Notification;
+use Illuminate\Console\Application;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\PromptsForMissingInput;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
@@ -29,8 +33,9 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     /**
      * The name and signature of the console command.
      */
-    protected $signature = self::COMMAND.' {store? : The ID or name of the store}'.
+    protected $signature = self::COMMAND.' {store?* : The IDs or names of the stores, run in sequence}'.
         ' {--all : Run all discovery-eligible stores, in sequence}'.
+        ' {--notify= : ID of the user notified in the panel when each store starts and when the run ends}'.
         ' {--dry-run : Show the command instead of executing it}';
 
     /**
@@ -55,7 +60,12 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         }
 
         $results = [];
-        foreach ($stores as $store) {
+        foreach ($stores->values() as $index => $store) {
+            $this->notifyUser(Notification::make()
+                ->title("Discovery started: {$store->name}")
+                ->body(sprintf('Store %d of %d', $index + 1, $stores->count()))
+                ->info());
+
             $results[] = $store->access_mode === AccessMode::Api
                 ? $this->runApiDiscovery($store, $marketplaces, $providers)
                 : $this->runAgenticDiscovery($store, $marketplaceStrategies);
@@ -65,7 +75,58 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
 
         $hasFailure = collect($results)->contains(fn (array $result) => ! $result['success']);
 
+        $this->notifyUser(Notification::make()
+            ->title('Discovery finished')
+            ->body(implode('<br>', array_map('e', $this->summaryLines($results))))
+            ->status($hasFailure ? 'warning' : 'success'));
+
         return $hasFailure ? SymfonyCommand::FAILURE : SymfonyCommand::SUCCESS;
+    }
+
+    /**
+     * Stores this command can run, in the order a full run visits them.
+     *
+     * @return Collection<int, Store>
+     */
+    public static function eligibleStores(): Collection
+    {
+        $marketplaces = app(MarketplaceRegistry::class);
+        $providers = app(ApiProviderRegistry::class);
+
+        return Store::query()
+            ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
+            ->with('tags')
+            ->get()
+            ->filter(fn (Store $store): bool => self::isDiscoveryEligible($store, $marketplaces, $providers))
+            ->values();
+    }
+
+    /**
+     * A discovery run is active, started from the panel or the terminal.
+     * The bracket keeps pgrep from matching its own command line.
+     */
+    public static function isRunning(): bool
+    {
+        $pattern = '['.substr(self::COMMAND, 0, 1).']'.substr(self::COMMAND, 1);
+
+        return Process::run(['pgrep', '-f', $pattern])->successful();
+    }
+
+    /**
+     * Start a run of these stores detached from the request (a run takes up to
+     * HERMES_RUN_TIMEOUT_SECONDS per store, so neither the request nor the
+     * single queue worker can hold it). Output goes to storage/logs/discovery-*.log.
+     *
+     * @param  array<int, int>  $storeIds
+     */
+    public static function startInBackground(array $storeIds, User $notify): void
+    {
+        $command = Application::formatCommandString(implode(' ', [
+            self::COMMAND, ...array_map('intval', $storeIds), '--notify='.(int) $notify->id,
+        ]));
+        $log = escapeshellarg(storage_path('logs/discovery-'.now()->format('Y-m-d').'.log'));
+
+        Process::path(base_path())->run("setsid nohup {$command} >> {$log} 2>&1 < /dev/null &");
     }
 
     /**
@@ -73,21 +134,14 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
      */
     protected function resolveStores(MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): Collection
     {
-        $eligible = fn () => Store::query()
-            ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
-            ->with('tags')
-            ->get()
-            ->filter(fn (Store $store): bool => $this->isDiscoveryEligible($store, $marketplaces, $providers))
-            ->values();
-
         if ($this->option('all')) {
-            return $eligible();
+            return self::eligibleStores();
         }
 
-        $identifier = $this->argument('store');
+        $identifiers = (array) $this->argument('store');
 
-        if ($identifier === null) {
-            $stores = $eligible();
+        if ($identifiers === []) {
+            $stores = self::eligibleStores();
 
             if ($stores->isEmpty()) {
                 return $stores;
@@ -103,17 +157,17 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             return $stores->where('id', $selectedId)->values();
         }
 
-        $store = Store::query()
+        return Store::query()
             ->whereIn('access_mode', [AccessMode::Agentic, AccessMode::Api])
             ->with('tags')
-            ->where(fn ($query) => $query->where('id', $identifier)->orWhere('name', $identifier))
-            ->first();
-
-        if ($store === null || ! $this->isDiscoveryEligible($store, $marketplaces, $providers)) {
-            return collect();
-        }
-
-        return collect([$store]);
+            ->where(fn ($query) => $query->whereIn('id', $identifiers)->orWhereIn('name', $identifiers))
+            ->get()
+            ->filter(fn (Store $store): bool => self::isDiscoveryEligible($store, $marketplaces, $providers))
+            // In the order given.
+            ->sortBy(fn (Store $store): int => (int) collect($identifiers)->search(
+                fn (string $identifier): bool => $identifier === (string) $store->id || $identifier === $store->name,
+            ))
+            ->values();
     }
 
     /**
@@ -122,7 +176,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
      * this command has nothing to do for them (price refresh is a separate,
      * unrelated flow).
      */
-    protected function isDiscoveryEligible(Store $store, MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): bool
+    protected static function isDiscoveryEligible(Store $store, MarketplaceRegistry $marketplaces, ApiProviderRegistry $providers): bool
     {
         if ($store->access_mode === AccessMode::Agentic) {
             return true;
@@ -235,8 +289,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
     protected function runAgenticDiscovery(
         Store $store,
         MarketplaceStrategyResolver $marketplaceStrategies,
-    ): array
-    {
+    ): array {
         $this->info("Running agentic discovery for store: {$store->name}");
 
         $urls = collect($store->agent_urls)
@@ -341,8 +394,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         Store $store,
         MarketplaceRegistry $marketplaces,
         ApiProviderRegistry $providers,
-    ): array
-    {
+    ): array {
         $this->info("Running API discovery for store: {$store->name}");
 
         $tags = $store->tags->pluck('name')->values();
@@ -747,6 +799,21 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
         $this->newLine();
         $this->info('=== Discovery Run Summary ===');
 
+        foreach ($this->summaryLines($results) as $line) {
+            $this->line($line);
+        }
+    }
+
+    /**
+     * One line per store plus the totals, for the terminal and the panel notification.
+     *
+     * @param  array<int, array{success: bool, store: Store, report: array}>  $results
+     * @return array<int, string>
+     */
+    protected function summaryLines(array $results): array
+    {
+        $lines = [];
+
         foreach ($results as $result) {
             $store = $result['store'];
             $report = $result['report'];
@@ -755,17 +822,31 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             $target = $report['min_products'] ?? $store->agent_max_products;
             $abortReason = $report['abort_reason'] ?? null;
 
-            $this->line(sprintf(
+            $lines[] = sprintf(
                 '%s: %s (created: %d/%d)%s',
                 $store->name,
                 $status,
                 $created,
                 $target,
                 $abortReason ? " — {$abortReason}" : ''
-            ));
+            );
         }
 
         $failed = count(array_filter($results, fn ($r) => ! $r['success']));
-        $this->line(sprintf('Total: %d stores, %d failed.', count($results), $failed));
+        $lines[] = sprintf('Total: %d stores, %d failed.', count($results), $failed);
+
+        return $lines;
+    }
+
+    /**
+     * Panel (bell) notification for the user given in --notify; runs from the terminal stay silent.
+     */
+    protected function notifyUser(Notification $notification): void
+    {
+        $user = $this->option('notify') ? User::find($this->option('notify')) : null;
+
+        if ($user !== null) {
+            $notification->sendToDatabase($user);
+        }
     }
 }
