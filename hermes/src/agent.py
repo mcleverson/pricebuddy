@@ -594,7 +594,7 @@ class Agent:
 
     def run(self) -> dict[str, Any]:
         """Code owns source order/pagination; the LLM returns one candidate batch per segment."""
-        from playwright.sync_api import sync_playwright
+        from invisible_playwright import InvisiblePlaywright
 
         self.start_time = time.time()
         try:
@@ -615,7 +615,7 @@ class Agent:
             )
             playwright_started = time.monotonic()
             logging.info("Discovery startup: starting Playwright")
-            with sync_playwright() as playwright:
+            with InvisiblePlaywright() as playwright:
                 logging.info(
                     "Discovery startup: Playwright ready (%.1fs)",
                     time.monotonic() - playwright_started,
@@ -1208,13 +1208,18 @@ class Agent:
                          existing=sent["existing"], failed=sent["failed"])
 
     def _launch_browser(self, playwright):
-        """Launch Firefox with invisible_playwright stealth."""
-        from invisible_playwright import InvisiblePlaywright
-        
+        """Launch Firefox with invisible_playwright stealth.
+
+        The `playwright` argument is already an InvisiblePlaywright instance,
+        so its `.firefox` launch methods ship the anti-detect patches
+        natively — no custom stealth scripts needed.
+        """
         headless = self.browser_options.get("headless", self.headless)
         if not isinstance(headless, bool):
             headless = self.headless
-        
+
+        # Context options — only valid in new_context() / launch_persistent_context(),
+        # never in launch()
         context_options = {
             "locale": self.browser_options.get("locale", "pt-BR"),
             "timezone_id": self.browser_options.get("timezone", "America/Sao_Paulo"),
@@ -1230,23 +1235,25 @@ class Agent:
         proxy = config.HTTP_PROXY
         if proxy:
             context_options["proxy"] = {"server": proxy}
-        
+
         # Use persistent context if headless=False, otherwise non-persistent
         if not headless:
             profile_dir = os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes")
             os.makedirs(profile_dir, exist_ok=True)
+            # Persistent context: launch args + context args are all valid here
             context = playwright.firefox.launch_persistent_context(
                 profile_dir,
+                headless=headless,
                 **context_options,
             )
             browser = context.browser
         else:
-            browser = playwright.firefox.launch(**context_options)
+            # launch() only accepts headless — context args go to new_context()
+            browser = playwright.firefox.launch(headless=headless)
             context = browser.new_context(**context_options)
         
         context.set_default_navigation_timeout(60000)
         context.set_default_timeout(30000)
-        # No stealth script needed — invisible_playwright handles this natively
         
         page = context.new_page()
         

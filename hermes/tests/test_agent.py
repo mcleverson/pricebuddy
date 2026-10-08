@@ -78,16 +78,19 @@ class TestBrowserToolSet(unittest.TestCase):
 
     def test_default_profile_uses_headless_firefox(self) -> None:
         playwright = Mock()
+        browser = Mock()
         context = Mock()
-        context.browser = Mock()
-        playwright.firefox.launch_persistent_context.return_value = context
+        browser.new_context.return_value = context
+        playwright.firefox.launch.return_value = browser
         agent = Agent("Amazon", "electronics", allowed_hosts=["www.amazon.com.br"])
 
         agent._launch_browser(playwright)
 
-        options = playwright.firefox.launch_persistent_context.call_args.kwargs
-        self.assertTrue(options["headless"])
-        self.assertIn("Firefox", options["user_agent"])
+        # Headless path: launch() takes only headless; context args go to new_context()
+        launch_kwargs = playwright.firefox.launch.call_args.kwargs
+        self.assertTrue(launch_kwargs["headless"])
+        context_options = browser.new_context.call_args.kwargs
+        self.assertIn("Firefox", context_options["user_agent"])
         context.add_init_script.assert_not_called()
         self.assertFalse(agent.require_image)
         self.assertFalse(agent.listing_image_enrichment)

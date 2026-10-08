@@ -82,11 +82,15 @@ services:
             HERMES_LLM_PAGE_SEGMENT_CHARS: ${HERMES_LLM_PAGE_SEGMENT_CHARS:-12000}
             HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
             HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
+            HERMES_2CAPTCHA_API_KEY: ${HERMES_2CAPTCHA_API_KEY:-}
+            HERMES_2CAPTCHA_PROXY: ${HERMES_2CAPTCHA_PROXY:-}
+            HERMES_2CAPTCHA_TIMEOUT: ${HERMES_2CAPTCHA_TIMEOUT:-180}
+            HERMES_2CAPTCHA_MAX_RETRIES: ${HERMES_2CAPTCHA_MAX_RETRIES:-2}
         depends_on:
             app:
                 condition: service_started
         volumes:
-            - hermes_chromium_profile:/home/hermes/.config/chromium
+            - hermes_firefox_profile:/home/hermes/.mozilla/firefox/pricebuddy-hermes
         networks:
             - hermes_app
         expose:
@@ -138,7 +142,7 @@ services:
             app:
                 condition: service_started
         volumes:
-            - hermes_chromium_profile:/home/hermes/.config/chromium
+            - hermes_firefox_profile:/home/hermes/.mozilla/firefox/pricebuddy-hermes
         networks:
             - hermes_app
         ports:
@@ -175,11 +179,15 @@ services:
             HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
             HERMES_MIN_PRODUCTS: ${HERMES_MIN_PRODUCTS:-10}
             HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
+            HERMES_2CAPTCHA_API_KEY: ${HERMES_2CAPTCHA_API_KEY:-}
+            HERMES_2CAPTCHA_PROXY: ${HERMES_2CAPTCHA_PROXY:-}
+            HERMES_2CAPTCHA_TIMEOUT: ${HERMES_2CAPTCHA_TIMEOUT:-180}
+            HERMES_2CAPTCHA_MAX_RETRIES: ${HERMES_2CAPTCHA_MAX_RETRIES:-2}
         depends_on:
             app:
                 condition: service_started
         volumes:
-            - hermes_chromium_profile:/home/hermes/.config/chromium
+            - hermes_firefox_profile:/home/hermes/.mozilla/firefox/pricebuddy-hermes
         networks:
             - hermes_app
         stdin_open: true
@@ -215,11 +223,15 @@ services:
             HERMES_MAX_PAGES: ${HERMES_MAX_PAGES:-15}
             HERMES_MIN_PRODUCTS: ${HERMES_MIN_PRODUCTS:-10}
             HERMES_RUN_TIMEOUT_SECONDS: ${HERMES_RUN_TIMEOUT_SECONDS:-600}
+            HERMES_2CAPTCHA_API_KEY: ${HERMES_2CAPTCHA_API_KEY:-}
+            HERMES_2CAPTCHA_PROXY: ${HERMES_2CAPTCHA_PROXY:-}
+            HERMES_2CAPTCHA_TIMEOUT: ${HERMES_2CAPTCHA_TIMEOUT:-180}
+            HERMES_2CAPTCHA_MAX_RETRIES: ${HERMES_2CAPTCHA_MAX_RETRIES:-2}
         depends_on:
             app:
                 condition: service_started
         volumes:
-            - hermes_chromium_profile:/home/hermes/.config/chromium
+            - hermes_firefox_profile:/home/hermes/.mozilla/firefox/pricebuddy-hermes
         networks:
             - hermes_app
         ports:
@@ -260,7 +272,7 @@ services:
 volumes:
     storage:
     database:
-    hermes_chromium_profile:
+    hermes_firefox_profile:
     intelligence_data:
     video_data:
 

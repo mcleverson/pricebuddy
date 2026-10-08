@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 from browser_guard import BrowserGuard, BrowserGuardError
-from playwright.sync_api import sync_playwright
 
 
 def _resolve_proxy() -> str | None:
@@ -159,10 +158,12 @@ def main() -> int:
                 os.makedirs(profile_dir, exist_ok=True)
                 context = playwright.firefox.launch_persistent_context(
                     profile_dir,
+                    headless=not headed,
                     **context_options,
                 )
             else:
-                browser = playwright.firefox.launch(**context_options)
+                # launch() only accepts headless — context args go to new_context()
+                browser = playwright.firefox.launch(headless=True)
                 context = browser.new_context(**context_options)
             
             print("[DEBUG] context created (invisible_playwright)", file=sys.stderr, flush=True)

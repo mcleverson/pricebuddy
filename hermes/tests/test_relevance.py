@@ -3,9 +3,13 @@ import sys
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
+
+# Mock invisible_playwright before importing agent (run() imports it lazily).
+sys.modules.setdefault('invisible_playwright', MagicMock())
+
 from agent import Agent
 from browser_tools import BrowserToolSet, BrowserToolResult, ProductCandidate
 from llm_client import LLMClientError, ToolCall

@@ -92,14 +92,14 @@ class ShoppingSearch(Agent):
         self.query = query
 
     def run(self) -> dict[str, Any]:  # type: ignore[override]
-        from playwright.sync_api import sync_playwright
+        from invisible_playwright import InvisiblePlaywright
 
         self.start_time = time.time()
         url = self.starting_urls[0]
         report: dict[str, Any] = {"status": "error", "query": self.query, "url": url, "results": [],
                                   "searched_at": datetime.now(timezone.utc).isoformat(), "error": None}
         try:
-            with sync_playwright() as playwright:
+            with InvisiblePlaywright() as playwright:
                 browser, context, page = self._launch_browser(playwright)
                 try:
                     tools = BrowserToolSet(page, BrowserGuard(self.allowed_hosts))
