@@ -123,7 +123,31 @@ class LLMClient:
             raise LLMClientError("Tool arguments must be a JSON object")
 
         logger.debug("LLM chose tool: %s", name)
-        return ToolCall(name=name, arguments=arguments)
+        return ToolCall(name=name, arguments=decode_stringified_arguments(arguments, tools, name))
+
+
+def decode_stringified_arguments(arguments: dict[str, Any], tools: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    """Some models (e.g. Gemini behind OpenAI-compatible routers) send an array or
+    object argument as a JSON string. Decode those, only for properties the tool
+    schema declares as array/object, so a run is not aborted over the encoding."""
+    schema = next((tool.get("function", {}) for tool in tools if tool.get("function", {}).get("name") == name), {})
+    properties = schema.get("parameters", {}).get("properties", {})
+    decoded = dict(arguments)
+    for key, value in arguments.items():
+        declared = properties.get(key, {}).get("type")
+        types = declared if isinstance(declared, list) else [declared]
+        # A property that also accepts strings keeps the value as sent.
+        expected = None if "string" in types else list if "array" in types else dict if "object" in types else None
+        if expected is None or not isinstance(value, str):
+            continue
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, expected):
+            logger.info("Decoded stringified %r argument of %s", key, name)
+            decoded[key] = parsed
+    return decoded
 
 
 class LLMClientError(Exception):

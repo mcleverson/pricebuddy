@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import random
 import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import parse_qs, urljoin, urlsplit
@@ -20,6 +22,24 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+# ── Human-like timing helpers (Phase 3) ──
+
+def _human_delay(min_ms: float = 400, max_ms: float = 2200) -> None:
+    """Simulate human reaction time with triangular distribution."""
+    ms = random.triangular(min_ms, max_ms, min_ms + (max_ms - min_ms) * 0.35)
+    time.sleep(ms / 1000.0)
+
+
+def _human_scroll(page: Any, steps: int | None = None) -> None:
+    """Simulate human-like scrolling with pauses between scrolls."""
+    if steps is None:
+        steps = random.randint(2, 4)
+    for _ in range(steps):
+        px = random.randint(150, 500)
+        page.evaluate(f"window.scrollBy(0, {px});")
+        _human_delay(80, 300)
 
 
 @dataclass
@@ -127,6 +147,8 @@ class BrowserToolSet:
             
             response = self.page.goto(validated_url, wait_until="domcontentloaded")
             self.page.wait_for_timeout(2500)
+            # Phase 3: human-like delay after navigation
+            _human_delay(600, 1800)
             self.page_count += 1
             self.visited_urls.add(self._normalize_url(validated_url))
             if isinstance(self.page.url, str):
@@ -282,10 +304,14 @@ class BrowserToolSet:
 
             previous_url = self.page.url
 
+            # Phase 3: human-like delay before click
+            _human_delay(300, 1200)
+
             # Playwright waits for actionable controls; AJAX pagination need not trigger navigation.
             element.click(timeout=5000)
 
-            self.page.wait_for_timeout(1500)
+            # Phase 3: human-like delay after click
+            _human_delay(400, 1500)
 
             if isinstance(self.page.url, str) and self.page.url != previous_url:
                 self.page_count += 1
@@ -310,7 +336,8 @@ class BrowserToolSet:
         """Navigate back in browser history."""
         try:
             self.page.go_back()
-            self.page.wait_for_timeout(1500)
+            # Phase 3: human-like delay after go back
+            _human_delay(500, 1800)
             
             return BrowserToolResult(
                 success=True,

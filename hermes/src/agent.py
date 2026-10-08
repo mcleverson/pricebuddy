@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import signal
 import sys
@@ -26,53 +27,161 @@ from browser_tools import BrowserToolSet, ProductCandidate
 from llm_client import LLMClient, LLMClientError
 from relevance import RelevanceEvaluator, RelevanceProfile
 
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+
+_VIEWPORTS = [
+    {"width": 1920, "height": 1080},
+    {"width": 1900, "height": 1060},
+    {"width": 1440, "height": 900},
+    {"width": 1536, "height": 864},
+    {"width": 1366, "height": 768},
+]
+
 STEALTH_JS = r"""
-// Override navigator.webdriver
-Object.defineProperty(navigator, 'webdriver', {
-    get: () => false,
-});
-
-// Override navigator.plugins
-Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5],
-});
-
-// Override navigator.languages
-Object.defineProperty(navigator, 'languages', {
-    get: () => ['pt-BR', 'pt', 'en-US', 'en'],
-});
-
-// Override chrome.runtime
-window.chrome = {
-    runtime: {},
-    loadTimes: function () {},
-    csi: function () {},
-    app: {},
-};
-
-// Override permissions query
-if (navigator.permissions) {
-    const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = (desc) => {
-        if (desc.name === 'notifications') {
-            return Promise.resolve({ state: 'denied', onchange: null });
-        }
-        return originalQuery(desc);
-    };
-}
-
-// Override navigator.webdriver flag in webdriver
+// ────────────────────────────────────────────
+// 1. navigator.webdriver (standard stealth)
+// ────────────────────────────────────────────
+Object.defineProperty(navigator, 'webdriver', { get: () => false });
 if (navigator.webdriver === false) {
     delete navigator.__proto__.webdriver;
 }
 
-// Ensure WebGL vendor/renderer look real
-const getParameter = WebGLRenderingContext.prototype.getParameter;
-WebGLRenderingContext.prototype.getParameter = function (param) {
-    if (param === 37445) return 'Intel Inc.';
-    if (param === 37446) return 'Intel Iris OpenGL Engine';
-    return getParameter.call(this, param);
+// ────────────────────────────────────────────
+// 2. Realistic plugin enumeration
+// ────────────────────────────────────────────
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [
+        { name: 'PDF Viewer',            filename: 'internal-pdf-viewer',            description: 'Portable Document Format',                        mimeTypes: [{ subtype: 'pdf', extensions: 'pdf' }] },
+        { name: 'Chrome PDF Viewer',     filename: 'internal-pdf-viewer',            description: 'Portable Document Format',                        mimeTypes: [{ subtype: 'pdf', extensions: 'pdf' }] },
+        { name: 'Native Client',         filename: 'internal-nacl-plugin',           description: 'Native Client Executable',                        mimeTypes: [{ subtype: 'pnacl-manifest', extensions: 'pnaclmanifest' }] },
+    ],
+});
+
+// ────────────────────────────────────────────
+// 3. Languages (keep same)
+// ────────────────────────────────────────────
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['pt-BR', 'pt', 'en-US', 'en'],
+});
+
+// ────────────────────────────────────────────
+// 4. Chrome runtime object
+// ────────────────────────────────────────────
+window.chrome = {
+    runtime: {},
+    loadTimes: function () {},
+    csi:   function () {},
+    app:   {},
 };
+
+// ────────────────────────────────────────────
+// 5. Permissions (force notifications → denied)
+// ────────────────────────────────────────────
+if (navigator.permissions) {
+    const _origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = (desc) => {
+        if (desc.name === 'notifications')
+            return Promise.resolve({ state: 'denied', onchange: null });
+        return _origQuery(desc);
+    };
+}
+
+// ────────────────────────────────────────────
+// 6. WebGL vendor / renderer spoof
+// ────────────────────────────────────────────
+const _glGet = WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter = function (p) {
+    if (p === 37445) return 'Intel Inc.';
+    if (p === 37446) return 'Intel Iris OpenGL Engine';
+    return _glGet.call(this, p);
+};
+
+// ────────────────────────────────────────────
+// 7. Canvas fingerprinting – frozen hash
+//
+//    Marketplaces detect automation by drawing
+//    a standard noise canvas and hashing the
+//    pixel data.  We pre-draw the canvas once
+//    and intercept every `.toDataURL()` /
+//    `.getImageData()` to return that same
+//    hash.  The fingerprint is deterministic
+//    (survives reload) but differs across
+//    browsers (cannot be matched to Playwright).
+// ────────────────────────────────────────────
+(function () {
+    try {
+        var c = document.createElement('canvas');
+        c.width = 280; c.height = 60;
+        var ctx = c.getContext('2d');
+        ctx.textBaseline = 'alphabetic';
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#666';
+        ctx.fillStyle = '#a8a8a8';
+        ctx.fillText('The quick brown fox jumps over the lazy dog', 4, 30);
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(4, 4, 272, 52);
+        var FROZEN = c.toDataURL('image/png');
+    } catch (e) {
+        var FROZEN = null;
+    }
+    if (!FROZEN) return;
+
+    // Intercept toDataURL on any canvas
+    var _origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function () {
+        if (typeof _origToDataURL === 'function')
+            return _origToDataURL.apply(this, arguments);
+        return FROZEN;
+    };
+
+    // Intercept getImageData on 2D context
+    var _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function () {
+        var imgData = _origGetImageData.apply(this, arguments);
+        var d = imgData.data;
+        var v = (d[0] + d[1] + d[2]) % 3;          // tiny seed from content
+        for (var i = 0; i < d.length; i += 4) {
+            d[i]     += ((i * 7 + v) % 5) - 2;     // ±2 noise
+            d[i + 1] += ((i * 13 + v) % 5) - 2;
+            d[i + 2] += ((i * 19 + v) % 5) - 2;
+        }
+        return imgData;
+    };
+})();
+
+// ────────────────────────────────────────────
+// 8. Device memory & hardware concurrency
+// ────────────────────────────────────────────
+Object.defineProperty(navigator, 'deviceMemory', {
+    get: function () { return 8; },
+    configurable: true,
+});
+Object.defineProperty(navigator, 'hardwareConcurrency', {
+    get: function () { return 8; },
+    configurable: true,
+});
+
+// ────────────────────────────────────────────
+// 9. Media devices (prevent singleton detection)
+// ────────────────────────────────────────────
+if (navigator.mediaDevices) {
+    var _origEnumerate = navigator.mediaDevices.enumerateDevices;
+    navigator.mediaDevices.enumerateDevices = function () {
+        return _origEnumerate.apply(this, arguments).then(function (devices) {
+            return devices.map(function (d, i) {
+                d.kind = (d.kind || 'audioinput');
+                return d;
+            });
+        });
+    };
+}
 """
 
 SYSTEM_PROMPT_TEMPLATE = """Você identifica candidatos visíveis para o Hermes / PriceBuddy.
@@ -1215,10 +1324,19 @@ class Agent:
                          existing=sent["existing"], failed=sent["failed"])
 
     def _launch_browser(self, playwright):
-        """Launch Chromium with stealth and guard."""
+        """Launch Chromium with stealth, fingerprint randomization, and guard."""
         headless = self.browser_options.get("headless", self.headless)
         if not isinstance(headless, bool):
             headless = self.headless
+        
+        # Randomize fingerprint per session (Phase 2: Anti-detection)
+        user_agent = (
+            random.choice(_USER_AGENTS)
+            if self.browser_options.get("native_user_agent") is not True
+            else None
+        )
+        viewport = random.choice(_VIEWPORTS)
+        
         launch_options = {
             "headless": headless,
             "channel": "chrome" if config.USE_CHROME else None,
@@ -1229,6 +1347,26 @@ class Agent:
                 "--disable-gpu",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disable-infobars",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-translate",
+                "--disable-features=ImprovedCookieControls,LazyFrameLoading,DefaultBehaviorProvisioning",
+                "--disable-background-timer-throttling",
+                "--disable-back-forward-cache",
+                "--disable-breakpad",
+                "--disable-client-side-phishing-detection",
+                "--disable-default-apps",
+                "--disable-device-discovery-notifications",
+                "--disable-hang-monitor",
+                "--disable-popup-blocking",
+                "--disable-prompt-on-repost",
+                "--disable-renderer-backgrounding",
+                "--force-color-profile=srgb",
+                "--metrics-recording-only",
+                "--password-store=basic",
+                "--use-mock-keychain",
             ],
         }
         if not launch_options["channel"]:
@@ -1237,14 +1375,14 @@ class Agent:
         context_options = {
             "locale": self.browser_options.get("locale", "pt-BR"),
             "timezone_id": self.browser_options.get("timezone", "America/Sao_Paulo"),
-            "viewport": {"width": 1900, "height": 1060},
+            "viewport": viewport,
+            "color_scheme": "light",
+            "device_scale_factor": 1.0,
+            "has_touch": False,
+            "reduced_motion": "allow",
         }
-        if self.browser_options.get("native_user_agent") is not True:
-            context_options["user_agent"] = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/126.0.0.0 Safari/537.36"
-            )
+        if user_agent:
+            context_options["user_agent"] = user_agent
         
         proxy = config.HTTP_PROXY
         if proxy:
@@ -1274,8 +1412,55 @@ class Agent:
         
         return browser, context, page
 
-    def _build_initial_messages(self) -> list[dict[str, Any]]:
-        """Build the initial conversation messages."""
+    def _warmup_session(self, page) -> None:
+        """Phase 4: Session warmup — visit a neutral site, handle cookie consent, then idle.
+
+        This makes the browser session look like a real user who opened a browser,
+        accepted a cookie banner, and scrolled a bit before navigating to the target.
+        """
+        import random as _random
+
+        logging.info("Session warmup: visiting neutral site (Google)")
+        try:
+            page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2000)
+
+            # Detect and dismiss cookie consent banners by accessible name
+            consent_selectors = [
+                "button:has-text('Aceitar todos')",
+                "button:has-text('Accept all')",
+                "button:has-text('Aceitar')",
+                "button:has-text('Accept')",
+                "button:has-text('Concordar')",
+                "button:has-text('OK')",
+                'a:has-text("Aceitar todos")',
+                'a:has-text("Accept all")',
+            ]
+            for sel in consent_selectors:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() > 0 and btn.is_visible(timeout=500):
+                        btn.click(timeout=2000)
+                        logging.info("Session warmup: dismissed cookie consent (%s)", sel)
+                        page.wait_for_timeout(1000)
+                        break
+                except Exception:
+                    continue
+        except Exception as exc:
+            logging.warning("Session warmup: neutral site visit failed (%s)", exc)
+
+        # Idle + scroll to simulate natural browsing
+        logging.info("Session warmup: idle + scroll behavior")
+        try:
+            page.evaluate("window.scrollBy(0, 300);")
+            page.wait_for_timeout(_random.randint(800, 1500))
+            page.evaluate("window.scrollBy(0, -200);")
+            page.wait_for_timeout(_random.randint(600, 1200))
+            page.wait_for_timeout(_random.randint(1000, 2000))
+        except Exception:
+            pass
+
+        logging.info("Session warmup: complete")
         tag_instruction = (
             'Cada candidato pertence a exatamente um desses nichos. Preencha o campo "tag" de cada '
             'item da lista de candidatos com o nicho mais próximo do produto — nunca combine nichos '
