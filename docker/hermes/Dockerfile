@@ -13,25 +13,55 @@ RUN apt-get update \
         x11vnc \
         x11-utils \
         xvfb \
-    && wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-        > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install --no-install-recommends -y google-chrome-stable \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libxrender1 \
+        libxss1 \
+        libxtst6 \
+        libglib2.0-0 \
+        libnss3 \
+        libnspr4 \
+        libdbus-1-3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libatspi2.0-0 \
+        libx11-6 \
+        libxext2 \
+        libxrender1 \
+        libxcb1 \
+        libxcb-sync1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libxss1 \
+        libxtst6 \
+        fonts-liberation \
+        fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid ${HERMES_GID} hermes \
     && useradd --uid ${HERMES_UID} --gid ${HERMES_GID} --create-home --shell /usr/sbin/nologin hermes \
-    && mkdir -p /home/hermes/.config/chromium \
+    && mkdir -p /home/hermes/.mozilla/firefox/pricebuddy-hermes \
     && chown -R hermes:hermes /home/hermes \
     && mkdir -p /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-RUN pip install --no-cache-dir playwright==1.61.0 requests==2.32.3 \
-    && playwright install --with-deps chromium \
+RUN pip install --no-cache-dir playwright==1.61.0 requests==2.32.3 invisible-playwright==0.27.0 twocaptcha \
+    && playwright install --with-deps firefox \
     && chown -R hermes:hermes /ms-playwright
 
 WORKDIR /opt/hermes
@@ -48,7 +78,8 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_HOST=0.0.0.0 \
     HERMES_PORT=8000 \
     PRICEBUDDY_API_BASE_URL=http://app/api \
-    HERMES_ALLOWED_HOSTS=
+    HERMES_ALLOWED_HOSTS= \
+    HERMES_USE_CHROME=false
 
 USER hermes
 

@@ -37,7 +37,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "Starting Python diagnose script..."
-python src/diagnose.py --headed --keep-open --chrome "$@" 2>&1 || echo "Python script exited with code $?"
+python src/diagnose.py --headed --keep-open "$@" 2>&1 || echo "Python script exited with code $?"
 
 echo "Python script finished, keeping container alive for noVNC access..."
 echo "Connect to: http://localhost:7900/vnc.html"

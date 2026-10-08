@@ -16,7 +16,6 @@ LLM_MAX_OUTPUT_TOKENS = int(os.environ.get("HERMES_LLM_MAX_OUTPUT_TOKENS", "4096
 # Browser Configuration
 ALLOWED_HOSTS = os.environ.get("HERMES_ALLOWED_HOSTS", "")
 HTTP_PROXY = os.environ.get("HERMES_HTTP_PROXY", "")
-USE_CHROME = os.environ.get("HERMES_USE_CHROME", "true").lower() == "true"
 
 # Hard Limits
 MAX_PAGES = int(os.environ.get("HERMES_MAX_PAGES", "15"))
@@ -31,6 +30,12 @@ HERMES_STORE_ID = int(os.environ.get("HERMES_STORE_ID", "1"))
 HERMES_MIN_DISCOUNT_PERCENTAGE = float(os.environ.get("HERMES_MIN_DISCOUNT_PERCENTAGE", "20.0"))
 HERMES_MIN_RATING = float(os.environ.get("HERMES_MIN_RATING", "0"))
 HERMES_MIN_SALES = int(os.environ.get("HERMES_MIN_SALES", "0"))
+
+# 2Captcha Configuration
+HERMES_2CAPTCHA_API_KEY = os.environ.get("HERMES_2CAPTCHA_API_KEY", "")
+HERMES_2CAPTCHA_PROXY = os.environ.get("HERMES_2CAPTCHA_PROXY", "")
+HERMES_2CAPTCHA_TIMEOUT = int(os.environ.get("HERMES_2CAPTCHA_TIMEOUT", "180"))
+HERMES_2CAPTCHA_MAX_RETRIES = int(os.environ.get("HERMES_2CAPTCHA_MAX_RETRIES", "2"))
 
 
 def redact_secrets(text: str) -> str:

@@ -23,57 +23,9 @@ import requests
 import config
 from browser_guard import BrowserGuard
 from browser_tools import BrowserToolSet, ProductCandidate
+from captcha_solver import CaptchaSolver
 from llm_client import LLMClient, LLMClientError
 from relevance import RelevanceEvaluator, RelevanceProfile
-
-STEALTH_JS = r"""
-// Override navigator.webdriver
-Object.defineProperty(navigator, 'webdriver', {
-    get: () => false,
-});
-
-// Override navigator.plugins
-Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5],
-});
-
-// Override navigator.languages
-Object.defineProperty(navigator, 'languages', {
-    get: () => ['pt-BR', 'pt', 'en-US', 'en'],
-});
-
-// Override chrome.runtime
-window.chrome = {
-    runtime: {},
-    loadTimes: function () {},
-    csi: function () {},
-    app: {},
-};
-
-// Override permissions query
-if (navigator.permissions) {
-    const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = (desc) => {
-        if (desc.name === 'notifications') {
-            return Promise.resolve({ state: 'denied', onchange: null });
-        }
-        return originalQuery(desc);
-    };
-}
-
-// Override navigator.webdriver flag in webdriver
-if (navigator.webdriver === false) {
-    delete navigator.__proto__.webdriver;
-}
-
-// Ensure WebGL vendor/renderer look real
-const getParameter = WebGLRenderingContext.prototype.getParameter;
-WebGLRenderingContext.prototype.getParameter = function (param) {
-    if (param === 37445) return 'Intel Inc.';
-    if (param === 37446) return 'Intel Iris OpenGL Engine';
-    return getParameter.call(this, param);
-};
-"""
 
 SYSTEM_PROMPT_TEMPLATE = """Você identifica candidatos visíveis para o Hermes / PriceBuddy.
 Objetivo: {goal}. Marketplace: {marketplace}. Nichos: {tags}.
@@ -590,12 +542,42 @@ class Agent:
         self.known_candidates = 0
         self.rejected_candidates = 0
 
+        # CAPTCHA solver — only enabled when an API key is configured.
+        self._captcha_solver: CaptchaSolver | None = (
+            CaptchaSolver() if config.HERMES_2CAPTCHA_API_KEY else None
+        )
+        if self._captcha_solver:
+            logging.info("CAPTCHA solver enabled (2Captcha API key configured)")
+        else:
+            logging.info("CAPTCHA solver disabled (set HERMES_2CAPTCHA_API_KEY to enable)")
+
     def _string_list_option(self, key: str) -> list[str]:
         """Read a list-of-strings browser option, ignoring invalid entries."""
         value = self.browser_options.get(key)
         if not isinstance(value, list):
             return []
         return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    def _solve_captcha_on_page(self, page) -> bool:
+        """Attempt to solve any CAPTCHA detected on the current page.
+        
+        Returns True if a CAPTCHA was solved successfully, False otherwise.
+        """
+        if not self._captcha_solver:
+            return False
+        
+        try:
+            logging.info("Attempting to solve CAPTCHA on %s", page.url)
+            result = self._captcha_solver.find_sitekey_and_solve(page, captcha_type="recaptcha")
+            if result.get("success"):
+                logging.info("CAPTCHA solved successfully on %s", page.url)
+                # Reload the page to apply the solved token
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                return True
+            return False
+        except Exception as exc:
+            logging.warning("CAPTCHA solving failed: %s", exc)
+            return False
 
     def remaining_seconds(self) -> float:
         return max(0, self.run_timeout_seconds - (time.time() - self.start_time))
@@ -639,10 +621,10 @@ class Agent:
                     time.monotonic() - playwright_started,
                 )
                 browser_started = time.monotonic()
-                logging.info("Discovery startup: launching Chromium")
+                logging.info("Discovery startup: launching Firefox")
                 browser, context, page = self._launch_browser(playwright)
                 logging.info(
-                    "Discovery startup: Chromium ready (%.1fs)",
+                    "Discovery startup: Firefox ready (%.1fs)",
                     time.monotonic() - browser_started,
                 )
                 try:
@@ -711,6 +693,17 @@ class Agent:
                                 source["state"] = "target_reached"
                                 break
                             if page_result.get("blocked_reason"):
+                                # Attempt CAPTCHA solving before giving up
+                                captcha_solved = self._solve_captcha_on_page(page)
+                                if captcha_solved:
+                                    logging.info("CAPTCHA solved, retrying page inspection")
+                                    observation = tools.execute("inspect_page", {})
+                                    if observation.success:
+                                        snapshot = observation.data
+                                        previous_snapshot = None
+                                        continue
+                                    source.update(state="blocked", reason=observation.message)
+                                    break
                                 source.update(state="blocked", reason=page_result["blocked_reason"])
                                 break
                             if not self._can_continue():
@@ -1215,60 +1208,45 @@ class Agent:
                          existing=sent["existing"], failed=sent["failed"])
 
     def _launch_browser(self, playwright):
-        """Launch Chromium with stealth and guard."""
+        """Launch Firefox with invisible_playwright stealth."""
+        from invisible_playwright import InvisiblePlaywright
+        
         headless = self.browser_options.get("headless", self.headless)
         if not isinstance(headless, bool):
             headless = self.headless
-        launch_options = {
-            "headless": headless,
-            "channel": "chrome" if config.USE_CHROME else None,
-            "args": [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ],
-        }
-        if not launch_options["channel"]:
-            del launch_options["channel"]
         
         context_options = {
             "locale": self.browser_options.get("locale", "pt-BR"),
             "timezone_id": self.browser_options.get("timezone", "America/Sao_Paulo"),
             "viewport": {"width": 1900, "height": 1060},
         }
+        # Firefox user agent — no need to spoof Chrome
         if self.browser_options.get("native_user_agent") is not True:
             context_options["user_agent"] = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/126.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
+                "Gecko/20100101 Firefox/128.0"
             )
         
         proxy = config.HTTP_PROXY
         if proxy:
             context_options["proxy"] = {"server": proxy}
         
-        # Try persistent context, fall back to non-persistent
-        profile_dir = os.path.expanduser("~/.config/chromium")
-        _clear_stale_browser_profile_locks(profile_dir)
-        try:
-            context = playwright.chromium.launch_persistent_context(
+        # Use persistent context if headless=False, otherwise non-persistent
+        if not headless:
+            profile_dir = os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes")
+            os.makedirs(profile_dir, exist_ok=True)
+            context = playwright.firefox.launch_persistent_context(
                 profile_dir,
-                **launch_options,
                 **context_options,
             )
             browser = context.browser
-        except Exception as exc:
-            logging.debug("Persistent context failed (%s), using non-persistent", exc)
-            browser = playwright.chromium.launch(**launch_options)
+        else:
+            browser = playwright.firefox.launch(**context_options)
             context = browser.new_context(**context_options)
         
         context.set_default_navigation_timeout(60000)
         context.set_default_timeout(30000)
-        if self.browser_options.get("stealth_script", True) is not False:
-            context.add_init_script(STEALTH_JS)
+        # No stealth script needed — invisible_playwright handles this natively
         
         page = context.new_page()
         

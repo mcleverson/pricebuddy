@@ -12,55 +12,6 @@ from pathlib import Path
 from browser_guard import BrowserGuard, BrowserGuardError
 from playwright.sync_api import sync_playwright
 
-STEALTH_JS = r"""
-// Override navigator.webdriver
-Object.defineProperty(navigator, 'webdriver', {
-    get: () => false,
-});
-
-// Override navigator.plugins
-Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5],
-});
-
-// Override navigator.languages
-Object.defineProperty(navigator, 'languages', {
-    get: () => ['pt-BR', 'pt', 'en-US', 'en'],
-});
-
-// Override chrome.runtime
-window.chrome = {
-    runtime: {},
-    loadTimes: function () {},
-    csi: function () {},
-    app: {},
-};
-
-// Override permissions query
-if (navigator.permissions) {
-    const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = (desc) => {
-        if (desc.name === 'notifications') {
-            return Promise.resolve({ state: 'denied', onchange: null });
-        }
-        return originalQuery(desc);
-    };
-}
-
-// Override navigator.webdriver flag in webdriver
-if (navigator.webdriver === false) {
-    delete navigator.__proto__.webdriver;
-}
-
-// Ensure WebGL vendor/renderer look real
-const getParameter = WebGLRenderingContext.prototype.getParameter;
-WebGLRenderingContext.prototype.getParameter = function (param) {
-    if (param === 37445) return 'Intel Inc.';
-    if (param === 37446) return 'Intel Iris OpenGL Engine';
-    return getParameter.call(this, param);
-};
-"""
-
 
 def _resolve_proxy() -> str | None:
     """Read the HTTP proxy from HERMES_HTTP_PROXY env var."""
@@ -83,17 +34,12 @@ def _parse_args(
     parser.add_argument(
         "--headed",
         action="store_true",
-        help="Show Chromium on the DISPLAY provided by the runtime",
+        help="Show Firefox on the DISPLAY provided by the runtime",
     )
     parser.add_argument(
         "--keep-open",
         action="store_true",
         help="Keep the browser open after navigation until interrupted",
-    )
-    parser.add_argument(
-        "--chrome",
-        action="store_true",
-        help="Use the installed Google Chrome channel instead of Playwright Chromium",
     )
     parsed = parser.parse_args(arguments)
 
@@ -104,7 +50,6 @@ def _parse_args(
         parsed.screenshot,
         parsed.headed,
         parsed.keep_open,
-        parsed.chrome,
     )
 
 
@@ -187,41 +132,18 @@ def main() -> int:
         )
         return 2
 
-    url, screenshot, headed, keep_open, use_chrome = parsed_args
-    print(f"[DEBUG] url={url}, headed={headed}, keep_open={keep_open}, use_chrome={use_chrome}", file=sys.stderr, flush=True)
+    url, screenshot, headed, keep_open = parsed_args
+    print(f"[DEBUG] url={url}, headed={headed}, keep_open={keep_open}", file=sys.stderr, flush=True)
     guard = BrowserGuard()
 
     try:
-        with sync_playwright() as playwright:
-            print("[DEBUG] sync_playwright started", file=sys.stderr, flush=True)
-            launch_options = {
-                "headless": not headed,
-                "channel": "chrome",
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-session-crashed-bubble",
-                    "--disable-renderer-accessibility",
-                    "--disable-software-rasterizer",
-                    "--disable-breakpad",
-                    "--disable-crash-reporter",
-                    "--disable-background-networking",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                ],
-            }
-            if not use_chrome:
-                launch_options.pop("channel")
+        from invisible_playwright import InvisiblePlaywright
+        with InvisiblePlaywright() as playwright:
+            print("[DEBUG] InvisiblePlaywright started", file=sys.stderr, flush=True)
             context_options = {
                 "user_agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/126.0.0.0 Safari/537.36"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
+                    "Gecko/20100101 Firefox/128.0"
                 ),
                 "locale": "pt-BR",
                 "timezone_id": "America/Sao_Paulo",
@@ -231,23 +153,21 @@ def main() -> int:
             if proxy:
                 context_options["proxy"] = {"server": proxy}
             
-            # Try persistent context first, fall back to non-persistent if locked
-            try:
-                print("[DEBUG] Attempting persistent context...", file=sys.stderr, flush=True)
-                context = playwright.chromium.launch_persistent_context(
-                    os.path.expanduser("~/.config/chromium"),
-                    **launch_options,
+            # Use persistent context only when headed (for cookie persistence)
+            if headed:
+                profile_dir = os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes")
+                os.makedirs(profile_dir, exist_ok=True)
+                context = playwright.firefox.launch_persistent_context(
+                    profile_dir,
                     **context_options,
                 )
-            except Exception as e:
-                print(f"[DEBUG] Persistent context failed ({e}), using non-persistent", file=sys.stderr, flush=True)
-                browser = playwright.chromium.launch(**launch_options)
+            else:
+                browser = playwright.firefox.launch(**context_options)
                 context = browser.new_context(**context_options)
             
+            print("[DEBUG] context created (invisible_playwright)", file=sys.stderr, flush=True)
             context.set_default_navigation_timeout(60000)
             context.set_default_timeout(30000)
-            context.add_init_script(STEALTH_JS)
-            print("[DEBUG] context created and stealth applied", file=sys.stderr, flush=True)
             try:
                 page = context.new_page()
                 print("[DEBUG] new page created", file=sys.stderr, flush=True)
@@ -258,7 +178,7 @@ def main() -> int:
                 page.bring_to_front()
                 page.on(
                     "crash",
-                    lambda: print("Chromium page renderer crashed", file=sys.stderr),
+                    lambda: print("Firefox page renderer crashed", file=sys.stderr),
                 )
                 document_requests: list[dict[str, str]] = []
                 failed_requests: list[dict[str, str]] = []

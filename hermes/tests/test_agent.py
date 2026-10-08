@@ -46,11 +46,11 @@ class TestBrowserToolSet(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertIn("0", result.message)
 
-    def test_mercado_livre_profile_uses_native_headed_chrome(self) -> None:
+    def test_mercado_livre_profile_uses_native_headed_firefox(self) -> None:
         playwright = Mock()
         context = Mock()
         context.browser = Mock()
-        playwright.chromium.launch_persistent_context.return_value = context
+        playwright.firefox.launch_persistent_context.return_value = context
         agent = Agent(
             "Mercado Livre",
             "electronics",
@@ -58,7 +58,6 @@ class TestBrowserToolSet(unittest.TestCase):
             browser_options={
                 "headless": False,
                 "native_user_agent": True,
-                "stealth_script": False,
                 "llm_page_segment_chars": 4000,
                 "llm_max_links_per_segment": 30,
                 "listing_image_enrichment": True,
@@ -68,7 +67,7 @@ class TestBrowserToolSet(unittest.TestCase):
 
         agent._launch_browser(playwright)
 
-        options = playwright.chromium.launch_persistent_context.call_args.kwargs
+        options = playwright.firefox.launch_persistent_context.call_args.kwargs
         self.assertFalse(options["headless"])
         self.assertNotIn("user_agent", options)
         context.add_init_script.assert_not_called()
@@ -77,19 +76,19 @@ class TestBrowserToolSet(unittest.TestCase):
         self.assertEqual(agent.llm_max_links_per_segment, 30)
         self.assertTrue(agent.listing_image_enrichment)
 
-    def test_default_profile_preserves_existing_browser_behavior(self) -> None:
+    def test_default_profile_uses_headless_firefox(self) -> None:
         playwright = Mock()
         context = Mock()
         context.browser = Mock()
-        playwright.chromium.launch_persistent_context.return_value = context
+        playwright.firefox.launch_persistent_context.return_value = context
         agent = Agent("Amazon", "electronics", allowed_hosts=["www.amazon.com.br"])
 
         agent._launch_browser(playwright)
 
-        options = playwright.chromium.launch_persistent_context.call_args.kwargs
+        options = playwright.firefox.launch_persistent_context.call_args.kwargs
         self.assertTrue(options["headless"])
-        self.assertIn("Chrome/126.0.0.0", options["user_agent"])
-        context.add_init_script.assert_called_once()
+        self.assertIn("Firefox", options["user_agent"])
+        context.add_init_script.assert_not_called()
         self.assertFalse(agent.require_image)
         self.assertFalse(agent.listing_image_enrichment)
         self.assertEqual(agent.llm_page_segment_chars, config.LLM_PAGE_SEGMENT_CHARS)
