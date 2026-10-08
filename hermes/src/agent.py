@@ -1379,7 +1379,7 @@ class Agent:
             "color_scheme": "light",
             "device_scale_factor": 1.0,
             "has_touch": False,
-            "reduced_motion": "allow",
+            "reduced_motion": "no-preference",
         }
         if user_agent:
             context_options["user_agent"] = user_agent
