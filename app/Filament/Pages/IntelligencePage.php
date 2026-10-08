@@ -14,10 +14,16 @@ use App\Settings\AppSettings;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Locked;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use Livewire\WithFileUploads;
 use Throwable;
 
 /**
@@ -27,6 +33,8 @@ use Throwable;
  */
 class IntelligencePage extends Page
 {
+    use WithFileUploads;
+
     /** Not worth posting; hidden from the list unless "show all" is on. */
     public const HIDDEN_ACTIONS = ['monitor', 'ignore'];
 
@@ -86,6 +94,24 @@ class IntelligencePage extends Page
     /** Ticked once the message was sent by hand to WhatsApp and recorded as published. */
     public bool $composeSent = false;
 
+    /** Video carousel (pricebuddy-video): the files being uploaded, the accepted ones in slide order and the template options. */
+    public array $composeUpload = [];
+
+    /** @var array<int, TemporaryUploadedFile> */
+    public array $composeMedia = [];
+
+    public bool $composeUseProductImage = true;
+
+    /** @var array<string, mixed> */
+    public array $composeTemplate = [];
+
+    /** The render being followed: {id, status, progress, error}. @var array<string, mixed>|null */
+    #[Locked]
+    public ?array $composeRender = null;
+
+    #[Locked]
+    public ?string $composeVideoUrl = null;
+
     public function mount(): void
     {
         $this->refresh();
@@ -134,6 +160,9 @@ class IntelligencePage extends Page
         $this->composeSent = false;
         $this->composeImage = $item['image'] ?? null;
         $this->composeScheduleAt = filled($item['scheduled_for'] ?? null) ? substr($item['scheduled_for'], 0, 16) : null;
+        $this->composeUpload = $this->composeMedia = [];
+        $this->composeUseProductImage = true;
+        $this->composeRender = $this->composeVideoUrl = null;
         $this->dispatch('open-modal', id: 'compose-publication');
     }
 
@@ -148,6 +177,93 @@ class IntelligencePage extends Page
             $this->composeMessage = OfferMessage::generate([...$item, 'url' => $this->purchaseLink((string) ($item['url'] ?? ''))]);
         } catch (AiProviderException $e) {
             Notification::make()->title('Could not write the message')->body($e->getMessage())->danger()->send();
+        }
+    }
+
+    public function startVideo(): void
+    {
+        $this->composeKind = 'video';
+        // The template defaults live in the video service; kept for the next products of this page.
+        if ($this->composeTemplate === []) {
+            $this->composeTemplate = $this->video(fn (PendingRequest $http) => $http->get('/v1/templates/carousel'))['data'] ?? [];
+        }
+    }
+
+    public function updatedComposeUpload(): void
+    {
+        $this->validate([
+            'composeUpload.*' => ['file', 'mimetypes:image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm', 'max:204800'],
+        ]);
+        $this->composeMedia = [...$this->composeMedia, ...$this->composeUpload];
+        $this->composeUpload = [];
+    }
+
+    public function removeMedia(int $index): void
+    {
+        unset($this->composeMedia[$index]);
+        $this->composeMedia = array_values($this->composeMedia);
+    }
+
+    public function renderVideo(): void
+    {
+        $item = $this->item((int) $this->composeProductId);
+        $cover = $this->composeUseProductImage ? ($item['image'] ?? null) : null;
+        if ($item === null || (blank($cover) && $this->composeMedia === [])) {
+            Notification::make()->title('Add at least one image or video')->warning()->send();
+
+            return;
+        }
+        $number = fn (mixed $value) => is_numeric($value) ? (float) $value : null;
+        $props = [
+            'product' => [
+                'title' => (string) ($item['title'] ?? ''),
+                'price' => $number($item['prices']['offer'] ?? null),
+                'originalPrice' => $number($item['prices']['original'] ?? null),
+                'discountPercent' => $number($item['prices']['discount_percent'] ?? null),
+                'store' => $item['store'] ?? null,
+            ],
+            // Number inputs come back as strings; the template validates numbers.
+            'template' => [...$this->composeTemplate, ...array_map($number, Arr::only($this->composeTemplate, ['secondsPerSlide', 'maxVideoSeconds']))],
+        ];
+        $response = $this->video(function (PendingRequest $http) use ($props, $cover) {
+            foreach ($this->composeMedia as $file) {
+                $http->attach('media[]', fopen($file->getRealPath(), 'r'), $file->getClientOriginalName(), ['Content-Type' => $file->getMimeType()]);
+            }
+
+            return $http->asMultipart()->post('/v1/renders', array_filter(['props' => json_encode($props), 'cover_url' => $cover]));
+        });
+        $this->composeVideoUrl = null;
+        $this->composeRender = $response['data'] ?? null;
+    }
+
+    /**
+     * Polled by the modal while rendering. The finished MP4 is copied to the public
+     * disk so the modal can preview and download it; copies older than 7 days are removed.
+     */
+    public function pollVideo(): void
+    {
+        if (! in_array($this->composeRender['status'] ?? null, ['queued', 'rendering'], true)) {
+            return;
+        }
+        $id = $this->composeRender['id'];
+        $this->composeRender = $this->video(fn (PendingRequest $http) => $http->get("/v1/renders/{$id}"))['data'] ?? $this->composeRender;
+        if ($this->composeRender['status'] === 'failed') {
+            Notification::make()->title('Could not render the video')->body(Str::limit((string) $this->composeRender['error'], 300))->danger()->send();
+        }
+        if ($this->composeRender['status'] !== 'done') {
+            return;
+        }
+
+        $disk = Storage::disk('public');
+        foreach ($disk->files('videos') as $old) {
+            if ($disk->lastModified($old) < now()->subDays(7)->getTimestamp()) {
+                $disk->delete($old);
+            }
+        }
+        $disk->makeDirectory('videos');
+        $path = "videos/{$id}.mp4";
+        if ($this->video(fn (PendingRequest $http) => $http->sink($disk->path($path))->get("/v1/renders/{$id}/video")) !== null) {
+            $this->composeVideoUrl = asset('storage/'.$path);
         }
     }
 
@@ -378,6 +494,30 @@ class IntelligencePage extends Page
                 'market_status' => null,
             ];
         })->all();
+    }
+
+    /**
+     * A request to pricebuddy-video; errors become notifications.
+     *
+     * @param  callable(PendingRequest): Response  $send
+     * @return array<string, mixed>|null
+     */
+    protected function video(callable $send): ?array
+    {
+        try {
+            $response = $send(Http::timeout((int) config('services.video.timeout', 120))->acceptJson()->baseUrl((string) config('services.video.url')));
+        } catch (ConnectionException) {
+            Notification::make()->title('pricebuddy-video is not reachable at '.config('services.video.url'))->danger()->send();
+
+            return null;
+        }
+        if ($response->failed()) {
+            Notification::make()->title(Str::limit((string) ($response->json('error') ?? 'HTTP '.$response->status()), 200))->danger()->send();
+
+            return null;
+        }
+
+        return $response->json() ?? [];
     }
 
     /**

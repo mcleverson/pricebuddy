@@ -4,3 +4,5 @@ public/build
 public/hot
 node_modules
 core
+video/remotion/node_modules
+video/remotion/build

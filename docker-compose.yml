@@ -227,11 +227,42 @@ services:
         stdin_open: true
         tty: true
         entrypoint: [ "bash", "/opt/hermes/run-agent.sh" ]
+
+    # Renders the video carousel of the publication modal (Remotion). Self-contained:
+    # Laravel talks to it only over HTTP (VIDEO_URL).
+    video:
+        build:
+            context: .
+            dockerfile: video/Dockerfile
+        image: pricebuddy-video:latest
+        restart: unless-stopped
+        shm_size: "1gb"
+        environment:
+            VIDEO_RENDER_CONCURRENCY: ${VIDEO_RENDER_CONCURRENCY:-2}
+            TZ: America/Sao_Paulo
+        volumes:
+            - video_data:/data
+        networks:
+            - hermes_app
+        expose:
+            - 8200
+
+    # Remotion Studio to edit the carousel layout live: docker compose --profile studio up video_studio
+    video_studio:
+        profiles: [ "studio" ]
+        image: pricebuddy-video:latest
+        working_dir: /opt/video/remotion
+        command: [ "npx", "remotion", "studio", "src/index.ts", "--port=3001", "--no-open" ]
+        volumes:
+            - ./video/remotion/src:/opt/video/remotion/src
+        ports:
+            - "127.0.0.1:3001:3001"
 volumes:
     storage:
     database:
     hermes_chromium_profile:
     intelligence_data:
+    video_data:
 
 networks:
     default:

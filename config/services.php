@@ -44,6 +44,11 @@ return [
         'timeout' => (int) env('INTELLIGENCE_TIMEOUT', 30),
     ],
 
+    'video' => [
+        'url' => env('VIDEO_URL', 'http://video:8200'),
+        'timeout' => (int) env('VIDEO_TIMEOUT', 120),
+    ],
+
     'hermes' => [
         'url' => env('HERMES_URL', 'http://hermes:8000'),
         // Must exceed HERMES_RUN_TIMEOUT_SECONDS (the agent's own self-imposed

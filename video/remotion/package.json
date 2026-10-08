@@ -1,0 +1,23 @@
+{
+    "name": "pricebuddy-video",
+    "private": true,
+    "description": "Remotion templates rendered by the pricebuddy-video service.",
+    "scripts": {
+        "studio": "remotion studio",
+        "bundle": "remotion bundle src/index.ts --out-dir=build",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@remotion/cli": "4.0.534",
+        "@remotion/transitions": "4.0.534",
+        "@remotion/zod-types": "4.0.534",
+        "react": "19.3.0",
+        "react-dom": "19.3.0",
+        "remotion": "4.0.534",
+        "zod": "4.5.4"
+    },
+    "devDependencies": {
+        "@types/react": "19.3.0",
+        "typescript": "7.0.2"
+    }
+}

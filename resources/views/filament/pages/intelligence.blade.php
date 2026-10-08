@@ -154,7 +154,7 @@
             <x-filament::button size="sm" :color="$composeKind === 'message' ? 'primary' : 'gray'" icon="heroicon-m-chat-bubble-left-right" wire:click="generateMessage">
                 {{ $composeKind === 'message' ? __('Rewrite message') : __('Message') }}
             </x-filament::button>
-            <x-filament::button size="sm" :color="$composeKind === 'video' ? 'primary' : 'gray'" icon="heroicon-m-video-camera" wire:click="$set('composeKind', 'video')">
+            <x-filament::button size="sm" :color="$composeKind === 'video' ? 'primary' : 'gray'" icon="heroicon-m-video-camera" wire:click="startVideo">
                 {{ __('Video') }}
             </x-filament::button>
         </div>
@@ -245,9 +245,76 @@
                 </div>
             </div>
         @elseif ($composeKind === 'video')
-            <div class="flex items-center justify-center h-48 rounded-md border border-dashed border-gray-300 dark:border-white/10 text-sm text-gray-500">
-                <x-filament::icon icon="heroicon-o-video-camera" class="w-6 h-6 mr-2" />
-                {{ __('Video generation is coming soon.') }}
+            @php($rendering = in_array($composeRender['status'] ?? null, ['queued', 'rendering'], true))
+            @php($input = 'text-sm rounded-md border-gray-300 dark:bg-gray-900 dark:border-white/10')
+            <div class="flex flex-col gap-4" @if ($rendering) wire:poll.3s="pollVideo" @endif>
+                {{-- Slides in this order: the product photo (optional), then the uploaded images and videos. --}}
+                <div class="flex flex-col gap-2">
+                    <label class="flex items-center gap-2 text-sm">
+                        <input type="checkbox" class="rounded border-gray-300" wire:model="composeUseProductImage">
+                        {{ __('Product photo as the first slide') }}
+                    </label>
+                    @foreach ($composeMedia as $index => $file)
+                        <div class="flex items-center justify-between gap-2 text-sm rounded-md bg-gray-50 dark:bg-white/5 px-3 py-1.5" wire:key="media-{{ $index }}">
+                            <span class="truncate">{{ $index + 1 }}. {{ $file->getClientOriginalName() }}</span>
+                            <x-filament::icon-button icon="heroicon-m-x-mark" color="gray" size="sm" wire:click="removeMedia({{ $index }})" :label="__('Remove')" />
+                        </div>
+                    @endforeach
+                    <input type="file" multiple accept="image/*,video/mp4,video/quicktime,video/webm" wire:model="composeUpload" class="text-sm">
+                    <div wire:loading wire:target="composeUpload" class="text-sm text-gray-500">{{ __('Uploading…') }}</div>
+                    @error('composeUpload.*') <div class="text-sm text-danger-600">{{ $message }}</div> @enderror
+                </div>
+
+                @if ($composeTemplate !== [])
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                        <label class="flex flex-col gap-1">{{ __('Primary color') }}
+                            <input type="color" wire:model="composeTemplate.primaryColor" class="h-9 w-full rounded-md">
+                        </label>
+                        <label class="flex flex-col gap-1">{{ __('Background') }}
+                            <input type="color" wire:model="composeTemplate.backgroundColor" class="h-9 w-full rounded-md">
+                        </label>
+                        <label class="flex flex-col gap-1">{{ __('Text color') }}
+                            <input type="color" wire:model="composeTemplate.textColor" class="h-9 w-full rounded-md">
+                        </label>
+                        <label class="flex flex-col gap-1 col-span-2 sm:col-span-1">{{ __('Call to action') }}
+                            <input type="text" wire:model="composeTemplate.cta" class="{{ $input }}">
+                        </label>
+                        <label class="flex flex-col gap-1">{{ __('Seconds per image') }}
+                            <input type="number" min="1" max="15" step="0.5" wire:model="composeTemplate.secondsPerSlide" class="{{ $input }}">
+                        </label>
+                        <label class="flex flex-col gap-1">{{ __('Transition') }}
+                            <select wire:model="composeTemplate.transition" class="{{ $input }}">
+                                <option value="fade">{{ __('Fade') }}</option>
+                                <option value="slide">{{ __('Slide') }}</option>
+                                <option value="none">{{ __('None') }}</option>
+                            </select>
+                        </label>
+                        <div class="col-span-2 sm:col-span-3 flex flex-wrap gap-4">
+                            <label class="flex items-center gap-2"><input type="checkbox" class="rounded border-gray-300" wire:model="composeTemplate.showOriginalPrice"> {{ __('Original price') }}</label>
+                            <label class="flex items-center gap-2"><input type="checkbox" class="rounded border-gray-300" wire:model="composeTemplate.showDiscount"> {{ __('Discount') }}</label>
+                            <label class="flex items-center gap-2"><input type="checkbox" class="rounded border-gray-300" wire:model="composeTemplate.showStore"> {{ __('Store') }}</label>
+                        </div>
+                    </div>
+                @endif
+
+                <div class="flex flex-wrap items-center gap-3">
+                    <x-filament::button size="sm" icon="heroicon-m-film" wire:click="renderVideo" :disabled="$rendering" wire:loading.attr="disabled" wire:target="renderVideo,composeUpload">
+                        {{ $composeVideoUrl ? __('Render again') : __('Render video') }}
+                    </x-filament::button>
+                    <span wire:loading wire:target="renderVideo" class="text-sm text-gray-500">{{ __('Sending the files…') }}</span>
+                    @if ($rendering)
+                        <span class="text-sm text-gray-500">{{ __('Rendering…') }} {{ (int) round(($composeRender['progress'] ?? 0) * 100) }}%</span>
+                    @elseif (($composeRender['status'] ?? null) === 'failed')
+                        <span class="text-sm text-danger-600">{{ __('The render failed.') }}</span>
+                    @endif
+                </div>
+
+                @if ($composeVideoUrl)
+                    <div class="flex flex-col items-center gap-2">
+                        <video src="{{ $composeVideoUrl }}" controls class="max-h-[28rem] rounded-md" wire:key="{{ $composeVideoUrl }}"></video>
+                        <x-filament::button size="sm" icon="heroicon-m-arrow-down-tray" tag="a" :href="$composeVideoUrl" download>{{ __('Download MP4') }}</x-filament::button>
+                    </div>
+                @endif
             </div>
         @endif
     </x-filament::modal>

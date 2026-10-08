@@ -1,0 +1,12 @@
+{
+    "primaryColor": "#ff3d00",
+    "backgroundColor": "#111111",
+    "textColor": "#ffffff",
+    "cta": "Link na bio",
+    "secondsPerSlide": 3,
+    "maxVideoSeconds": 15,
+    "transition": "fade",
+    "showOriginalPrice": true,
+    "showDiscount": true,
+    "showStore": true
+}
