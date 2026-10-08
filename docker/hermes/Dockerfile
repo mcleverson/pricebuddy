@@ -34,7 +34,6 @@ RUN apt-get update \
         libdrm2 \
         libatspi2.0-0 \
         libx11-6 \
-        libxext2 \
         libxrender1 \
         libxcb1 \
         libxcb-sync1 \
