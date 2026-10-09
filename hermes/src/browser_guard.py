@@ -121,11 +121,22 @@ class BrowserGuard:
                     "reason": str(exc),
                 }
             )
-            route.abort("blockedbyclient")
+            self._resolve_route(route.abort, "blockedbyclient")
             return
 
         self.allowed_request_count += 1
-        route.continue_()
+        self._resolve_route(route.continue_)
+
+    @staticmethod
+    def _resolve_route(resolve, *args) -> None:
+        """Firefox may cancel an intercepted request on its own (redirect, page
+        navigating away) before it is resolved; that request is gone either way,
+        so the error is ignored instead of surfacing on the page's next call."""
+        try:
+            resolve(*args)
+        except Exception as exc:
+            if "NS_BINDING_ABORTED" not in str(exc):
+                raise
 
     @staticmethod
     def _reject_sensitive_host(host: str) -> None:
