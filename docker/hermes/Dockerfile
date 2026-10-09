@@ -59,9 +59,15 @@ RUN groupadd --gid ${HERMES_GID} hermes \
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-RUN pip install --no-cache-dir playwright==1.61.0 requests==2.32.3 invisible-playwright==0.27.0 twocaptcha \
+RUN pip install --no-cache-dir playwright==1.61.0 requests==2.32.3 invisible-playwright==0.28.0 invisible-core==37.33.0 twocaptcha \
     && playwright install --with-deps firefox \
     && chown -R hermes:hermes /ms-playwright
+
+# Download invisible_playwright's patched Firefox into the image (hermes' cache),
+# so it is not fetched again (~290 MB) every time the container is recreated.
+USER hermes
+RUN invisible-playwright fetch
+USER root
 
 WORKDIR /opt/hermes
 
