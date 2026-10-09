@@ -615,14 +615,14 @@ class Agent:
             )
             playwright_started = time.monotonic()
             logging.info("Discovery startup: starting Playwright")
-            with InvisiblePlaywright() as playwright:
+            with self._invisible_playwright(InvisiblePlaywright) as launched:
                 logging.info(
                     "Discovery startup: Playwright ready (%.1fs)",
                     time.monotonic() - playwright_started,
                 )
                 browser_started = time.monotonic()
                 logging.info("Discovery startup: launching Firefox")
-                browser, context, page = self._launch_browser(playwright)
+                browser, context, page = self._launch_browser(launched)
                 logging.info(
                     "Discovery startup: Firefox ready (%.1fs)",
                     time.monotonic() - browser_started,
@@ -1207,56 +1207,50 @@ class Agent:
             self._record("submit", url=candidate.url, created=sent["success"],
                          existing=sent["existing"], failed=sent["failed"])
 
-    def _launch_browser(self, playwright):
-        """Launch Firefox with invisible_playwright stealth.
-
-        The `playwright` argument is already an InvisiblePlaywright instance,
-        so its `.firefox` launch methods ship the anti-detect patches
-        natively — no custom stealth scripts needed.
-        """
+    def _invisible_playwright(self, invisible_playwright_cls):
+        """Build the InvisiblePlaywright session. Entering it launches its patched
+        Firefox: a Browser, or a persistent BrowserContext when profile_dir is set.
+        Launch options belong here, not in launch()/new_context()."""
         headless = self.browser_options.get("headless", self.headless)
         if not isinstance(headless, bool):
             headless = self.headless
 
-        # Context options — only valid in new_context() / launch_persistent_context(),
-        # never in launch()
-        context_options = {
+        options = {
+            "headless": headless,
             "locale": self.browser_options.get("locale", "pt-BR"),
-            "timezone_id": self.browser_options.get("timezone", "America/Sao_Paulo"),
-            "viewport": {"width": 1900, "height": 1060},
+            "timezone": self.browser_options.get("timezone", "America/Sao_Paulo"),
         }
-        # Firefox user agent — no need to spoof Chrome
-        if self.browser_options.get("native_user_agent") is not True:
-            context_options["user_agent"] = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
-                "Gecko/20100101 Firefox/128.0"
-            )
-        
-        proxy = config.HTTP_PROXY
-        if proxy:
-            context_options["proxy"] = {"server": proxy}
-
-        # Use persistent context if headless=False, otherwise non-persistent
+        if config.HTTP_PROXY:
+            options["proxy"] = {"server": config.HTTP_PROXY}
+        # Use persistent profile if headless=False, otherwise non-persistent
         if not headless:
             profile_dir = os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes")
             os.makedirs(profile_dir, exist_ok=True)
-            # Persistent context: launch args + context args are all valid here
-            context = playwright.firefox.launch_persistent_context(
-                profile_dir,
-                headless=headless,
-                **context_options,
-            )
-            browser = context.browser
+            options["profile_dir"] = profile_dir
+        return invisible_playwright_cls(**options)
+
+    def _launch_browser(self, launched):
+        """Open the working page on what InvisiblePlaywright launched."""
+        # invisible_playwright ships its own Playwright copy, so check by behaviour
+        # instead of isinstance against playwright.sync_api types.
+        if not hasattr(launched, "new_context"):
+            # Persistent profile: the session already owns the context.
+            browser, context = None, launched
         else:
-            # launch() only accepts headless — context args go to new_context()
-            browser = playwright.firefox.launch(headless=headless)
-            context = browser.new_context(**context_options)
-        
+            context_options = {"viewport": {"width": 1900, "height": 1060}}
+            # Firefox user agent — no need to spoof Chrome
+            if self.browser_options.get("native_user_agent") is not True:
+                context_options["user_agent"] = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
+                    "Gecko/20100101 Firefox/128.0"
+                )
+            browser, context = launched, launched.new_context(**context_options)
+
         context.set_default_navigation_timeout(60000)
         context.set_default_timeout(30000)
-        
+
         page = context.new_page()
-        
+
         return browser, context, page
 
     def _build_initial_messages(self) -> list[dict[str, Any]]:
