@@ -1237,13 +1237,9 @@ class Agent:
             # Persistent profile: the session already owns the context.
             browser, context = None, launched
         else:
+            # No user_agent here: invisible_playwright announces the one sealed with
+            # its engine build, and overriding it breaks the fingerprint coherence.
             context_options = {"viewport": {"width": 1900, "height": 1060}}
-            # Firefox user agent — no need to spoof Chrome
-            if self.browser_options.get("native_user_agent") is not True:
-                context_options["user_agent"] = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
-                    "Gecko/20100101 Firefox/128.0"
-                )
             browser, context = launched, launched.new_context(**context_options)
 
         context.set_default_navigation_timeout(60000)
