@@ -48,10 +48,15 @@ def build_offer(product: dict[str, Any]) -> rules.Offer | None:
         if coupon.get("status") == "active" and coupon.get("store_id") == best.get("store_id"):
             code = f" (code {coupon['code']})" if coupon.get("code") else " (activate on the product page)"
             conditions.append(f"coupon: {coupon.get('title')}{code}")
+    # PriceBuddy copies a lone price to the previous day (for its chart); days
+    # before the import are not real history. Both use PriceBuddy's UTC dates.
+    imported = _parse(product.get("created_at"))
+    first_day = imported.astimezone(ZoneInfo("UTC")).date().isoformat() if imported else ""
     return rules.Offer(
         product_id=int(product["id"]), title=product.get("title") or "", store=best.get("store_name"),
         price=float(best["price"]), original_price=float(best["original_price"]) if best.get("original_price") else None,
-        url=best.get("url"), history={day: float(price) for day, price in (best.get("history") or {}).items() if price},
+        url=best.get("url"), history={day: float(price) for day, price in (best.get("history") or {}).items()
+                                      if price and day >= first_day},
         image=product.get("image"), imported_at=product.get("created_at"), conditions=conditions,
         commission=float(best["product_commission"]) if best.get("product_commission") else None,
         seller_commission=float(best["seller_commission"]) if best.get("seller_commission") else None,

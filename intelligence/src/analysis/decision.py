@@ -98,9 +98,12 @@ def decide(offer: Offer, references: list[Reference], *, last_publication: dict[
         "seller_commission": offer.seller_commission,
     }
 
-    if offer.original_price and offer.history and offer.original_price > max(offer.history.values()) * 1.5:
+    # Only earlier days count: today's price is the offer itself, so on a newly
+    # imported product any discount above 33% would look like an inflated 'De'.
+    earlier = [price for day, price in offer.history.items() if day < now.date().isoformat() and price]
+    if offer.original_price and earlier and offer.original_price > max(earlier) * 1.5:
         risks.append(f"store's original price {offer.original_price:.2f} is over 1.5x the highest price ever "
-                     f"recorded ({max(offer.history.values()):.2f})")
+                     f"recorded ({max(earlier):.2f})")
         # An inflated 'De' price can't make the offer a deal on its own.
         discount = prices["discount_percent"] = None
     if market_status not in ("completed", "not_needed", "not_checked"):
