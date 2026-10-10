@@ -379,6 +379,16 @@ class BrowserToolSet:
                     };
                 })
             """)
+            # Site header/menu images (e.g. Mercado Livre's "CUPONS EXCLUSIVOS
+            # MELI+" banner) come first in page order but are never the product.
+            site_chrome_images = set()
+            for landmark in ("banner", "navigation"):
+                site_chrome_images.update(self.page.get_by_role(landmark).get_by_role("img").evaluate_all(
+                    "elements => elements.map(image => image.currentSrc || image.src || '')"
+                ))
+            accessible_images = [
+                image for image in accessible_images if image.get("src") not in site_chrome_images
+            ]
             # Prefer the first semantically exposed product image. Declarative
             # metadata may contain a banner or recommendation image.
             accessible_product_image = self._select_accessible_image(
