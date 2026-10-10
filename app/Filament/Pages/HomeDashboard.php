@@ -2,15 +2,12 @@
 
 namespace App\Filament\Pages;
 
-use App\Console\Commands\RunAgentStrategy;
 use App\Filament\Resources\ProductResource\Actions\CreateAction;
 use App\Filament\Widgets\ProductStats;
 use App\Services\Dashboard\DashboardLayoutService;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
-use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\Toggle;
-use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Support\Facades\FilamentIcon;
 use Filament\Widgets\Widget;
@@ -94,47 +91,8 @@ class HomeDashboard extends Page
     {
         return [
             CreateAction::make(),
-            $this->runStrategiesAction(),
             $this->customizeAction(),
         ];
-    }
-
-    /**
-     * Product discovery of the chosen agentic/api stores, in the background;
-     * the bell notifies when each store starts and when the run ends.
-     */
-    protected function runStrategiesAction(): Action
-    {
-        return Action::make('runStrategies')
-            ->label(__('Run strategies'))
-            ->icon('heroicon-o-play')
-            ->color('gray')
-            ->disabled(fn (): bool => RunAgentStrategy::isRunning())
-            ->tooltip(fn (): ?string => RunAgentStrategy::isRunning() ? __('Discovery in progress') : null)
-            ->modalHeading(__('Run strategies'))
-            ->modalDescription(__('Product discovery runs in the background, one store after the other. You will be notified when each store starts and when all finish.'))
-            ->modalSubmitActionLabel(__('Run'))
-            ->fillForm(fn (): array => ['stores' => RunAgentStrategy::eligibleStores()->pluck('id')->all()])
-            ->form([
-                CheckboxList::make('stores')
-                    ->label(__('Stores'))
-                    ->options(fn (): array => RunAgentStrategy::eligibleStores()
-                        ->mapWithKeys(fn ($store): array => [$store->id => "{$store->name} ({$store->access_mode->value})"])
-                        ->all())
-                    ->bulkToggleable()
-                    ->required(),
-            ])
-            ->action(function (array $data): void {
-                if (RunAgentStrategy::isRunning()) {
-                    Notification::make()->title(__('Discovery in progress'))->warning()->send();
-
-                    return;
-                }
-
-                RunAgentStrategy::startInBackground($data['stores'], auth()->user());
-
-                Notification::make()->title(__('Discovery started'))->body(trans_choice(':count store|:count stores', count($data['stores'])))->success()->send();
-            });
     }
 
     protected function customizeAction(): Action

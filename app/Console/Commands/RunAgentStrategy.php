@@ -11,12 +11,10 @@ use App\Services\ProductData\ApiProviderRegistry;
 use App\Services\ProductData\MarketplaceRegistry;
 use App\Services\Scraping\MarketplaceStrategyResolver;
 use Filament\Notifications\Notification;
-use Illuminate\Console\Application;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Console\PromptsForMissingInput;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
@@ -99,34 +97,6 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             ->get()
             ->filter(fn (Store $store): bool => self::isDiscoveryEligible($store, $marketplaces, $providers))
             ->values();
-    }
-
-    /**
-     * A discovery run is active, started from the panel or the terminal.
-     * The bracket keeps pgrep from matching its own command line.
-     */
-    public static function isRunning(): bool
-    {
-        $pattern = '['.substr(self::COMMAND, 0, 1).']'.substr(self::COMMAND, 1);
-
-        return Process::run(['pgrep', '-f', $pattern])->successful();
-    }
-
-    /**
-     * Start a run of these stores detached from the request (a run takes up to
-     * HERMES_RUN_TIMEOUT_SECONDS per store, so neither the request nor the
-     * single queue worker can hold it). Output goes to storage/logs/discovery-*.log.
-     *
-     * @param  array<int, int>  $storeIds
-     */
-    public static function startInBackground(array $storeIds, User $notify): void
-    {
-        $command = Application::formatCommandString(implode(' ', [
-            self::COMMAND, ...array_map('intval', $storeIds), '--notify='.(int) $notify->id,
-        ]));
-        $log = escapeshellarg(storage_path('logs/discovery-'.now()->format('Y-m-d').'.log'));
-
-        Process::path(base_path())->run("setsid nohup {$command} >> {$log} 2>&1 < /dev/null &");
     }
 
     /**
