@@ -12,7 +12,9 @@ use Filament\Actions\Contracts\HasActions;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Facades\Http;
 use Livewire\Component;
+use Throwable;
 
 class ProductCardDetail extends Component implements HasActions, HasForms
 {
@@ -85,6 +87,40 @@ class ProductCardDetail extends Component implements HasActions, HasForms
                         ->danger()
                         ->send();
                 }
+            });
+    }
+
+    /**
+     * Same as AddToSelectionBulkAction, for a single card: puts the product in
+     * "My Product Selection" on the Intelligence page.
+     */
+    public function addToSelectionAction(): Action
+    {
+        return Action::make('addToSelection')
+            ->label(__('Add to selection'))
+            ->size('sm')
+            ->color('gray')
+            ->icon('heroicon-o-light-bulb')
+            ->outlined(false)
+            ->action(function () {
+                try {
+                    Http::timeout(10)->acceptJson()
+                        ->post(config('services.intelligence.url').'/v1/selection', ['product_ids' => [$this->product->id]])
+                        ->throw();
+                } catch (Throwable $e) {
+                    Notification::make('add_to_selection_failed')
+                        ->title(__('Could not add to the selection'))
+                        ->body($e->getMessage())
+                        ->danger()
+                        ->send();
+
+                    return;
+                }
+
+                Notification::make('added_to_selection')
+                    ->title(__(':count product(s) added to My Product Selection', ['count' => 1]))
+                    ->success()
+                    ->send();
             });
     }
 

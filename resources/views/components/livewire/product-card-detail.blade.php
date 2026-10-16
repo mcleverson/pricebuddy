@@ -29,6 +29,7 @@
             {{ $this->addUrlAction }}
             {{ $this->editAction }}
             {{ $this->fetchAction }}
+            {{ $this->addToSelectionAction }}
             {{ $this->deleteAction }}
         </div>
 
