@@ -11,7 +11,6 @@ use App\Services\Carousels\CarouselApproval;
 use App\Services\Helpers\SettingsHelper;
 use App\Settings\AppSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -167,7 +166,7 @@ class CarouselApprovalTest extends TestCase
             $copy->selection()->pluck('title')->all(),
         );
         $this->assertSame(0, $copy->candidates()->whereNotNull('product_id')->count());
-        // The original keeps its approval and slides.
+        // The original keeps its approval and selection.
         $this->assertSame(Carousel::STATUS_APPROVED, $this->carousel->fresh()->status);
 
         // The copy can be changed and approved again without duplicating catalog products.
@@ -177,17 +176,14 @@ class CarouselApprovalTest extends TestCase
         $this->assertSame(5, Product::count());
     }
 
-    public function test_deleting_keeps_catalog_products_and_removes_the_slides(): void
+    public function test_deleting_keeps_catalog_products(): void
     {
-        Storage::fake('public');
         $this->selectFive();
         app(CarouselApproval::class)->approve($this->carousel);
-        Storage::disk('public')->put("carousels/{$this->carousel->id}/slide-1.png", 'png');
 
         $this->carousel->fresh()->delete();
 
         $this->assertSame(0, CarouselCandidate::count());
         $this->assertSame(5, Product::count());
-        Storage::disk('public')->assertMissing("carousels/{$this->carousel->id}/slide-1.png");
     }
 }

@@ -178,7 +178,7 @@ class CarouselPagesTest extends TestCase
         $this->assertSame(6, CarouselSettings::get('candidates_per_store'));
         $this->assertSame(['Cantinho do café'], CarouselSettings::get('suggested_niches'));
         $this->assertSame([3, 8], CarouselSettings::productRange());
-        $this->assertSame(25.0, CarouselSettings::get('weights')['visual_appeal']);
+        $this->assertSame(5.0, CarouselSettings::get('weights')['visual_appeal']);
     }
 
     public function test_scoring_weights_must_add_up_to_100(): void

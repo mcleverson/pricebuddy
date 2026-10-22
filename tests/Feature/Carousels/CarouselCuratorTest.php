@@ -74,8 +74,8 @@ class CarouselCuratorTest extends TestCase
     {
         $scores = ['visual_appeal' => 80, 'originality' => 60, 'niche_relevance' => 100, 'usefulness' => 40, 'image_quality' => null, 'commercial_potential' => 50];
 
-        // (80*25 + 60*20 + 100*20 + 40*15 + 50*10) / 90
-        $this->assertSame(70.0, CarouselCurator::weightedScore($scores, CarouselSettings::DEFAULT_WEIGHTS));
+        // (80*5 + 60*30 + 100*15 + 40*25 + 50*25) / 100: image_quality has weight 0
+        $this->assertSame(59.5, CarouselCurator::weightedScore($scores, CarouselSettings::DEFAULT_WEIGHTS));
         $this->assertNull(CarouselCurator::weightedScore(['image_quality' => null], CarouselSettings::DEFAULT_WEIGHTS));
     }
 
@@ -101,7 +101,7 @@ class CarouselCuratorTest extends TestCase
         $this->assertSame('mug', $mug->product_type);
         $this->assertSame(['Distinctive design'], $mug->reasons);
         $this->assertSame('Cantinho do café', $prompt['niche']);
-        $this->assertSame(['id', 'title', 'store', 'price'], array_keys($prompt['products'][0]));
+        $this->assertSame(['id', 'title', 'store', 'price', 'rating', 'sales_count'], array_keys($prompt['products'][0]));
     }
 
     public function test_candidates_stay_selectable_when_the_provider_fails(): void
