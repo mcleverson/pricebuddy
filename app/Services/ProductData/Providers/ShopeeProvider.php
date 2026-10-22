@@ -362,6 +362,8 @@ class ShopeeProvider extends ConfiguredProvider
                 'product_commission' => $this->commissionPercent($node, 'commissionRate'),
                 'seller_commission' => $this->commissionPercent($node, 'sellerCommissionRate'),
                 'image' => data_get($node, 'imageUrl'),
+                'sales' => data_get($node, 'sales'),
+                'rating' => data_get($node, 'ratingStar'),
                 'store_id' => $store->getKey(),
                 'tags' => [$tag],
             ])

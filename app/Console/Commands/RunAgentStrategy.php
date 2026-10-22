@@ -170,7 +170,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
      *
      * @return array<string, bool|int|list<string>>
      */
-    protected function storeAgentOptions(Store $store): array
+    public static function storeAgentOptions(Store $store): array
     {
         $options = [];
 
@@ -288,7 +288,7 @@ class RunAgentStrategy extends Command implements PromptsForMissingInput
             // strategy defaults, the same precedence ScrapingGateway uses.
             'agent_options' => (object) array_replace(
                 $marketplaceStrategy->agentOptions($urls->first()),
-                $this->storeAgentOptions($store),
+                self::storeAgentOptions($store),
             ),
             'goal' => $goal,
             'urls' => $urls->values()->all(),

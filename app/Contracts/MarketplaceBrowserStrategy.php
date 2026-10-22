@@ -41,4 +41,10 @@ interface MarketplaceBrowserStrategy
      * @param  array<int|string, mixed>  $errors
      */
     public function detectBlockedResponse(array $errors, string $body, ?string $finalUrl = null): ?string;
+
+    /**
+     * The marketplace's own search results page for a term, browsed by Hermes
+     * for carousel discovery. Null when the marketplace has no known one.
+     */
+    public function searchUrl(string $term): ?string;
 }

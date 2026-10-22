@@ -14,6 +14,7 @@ from agent import Agent
 from browser_tools import BrowserToolSet, BrowserToolResult, ProductCandidate
 from llm_client import LLMClientError, ToolCall
 from main import evaluate_request
+from test_discovery import with_link_ids
 from relevance import (DECISION_CACHE, DecisionCache, RelevanceDecision, RelevanceEvaluator,
                        RelevanceProfile, parse_decisions)
 
@@ -389,7 +390,7 @@ class RelevanceDiscoveryFlowTest(unittest.TestCase):
 
     def run_flow(self, items, llm_responses, relevance_profile, tags=None, min_products=1):
         llm = Mock()
-        llm.chat_completion.side_effect = llm_responses
+        llm.chat_completion.side_effect = with_link_ids(llm_responses, {item['url']: item['title'] for item in items})
         agent = Agent('example', 'smartphones', llm_client=llm, min_products=min_products,
                       starting_urls=['https://example.com/start'], allowed_hosts=['example.com'],
                       tags=tags or ['Celulares'], relevance_profile=relevance_profile,

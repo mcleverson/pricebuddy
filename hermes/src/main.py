@@ -137,6 +137,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         min_rating = body.get("min_rating", config.HERMES_MIN_RATING)
         min_sales = body.get("min_sales", config.HERMES_MIN_SALES)
         store_id = body.get("store_id") or body.get("storeId")
+        ingest = body.get("ingest", True)
+        per_source_products = body.get("per_source_products")
 
         if not goal or not marketplace:
             self._send_json(400, {"status": "error", "error": "Missing required fields: marketplace, goal"})
@@ -144,6 +146,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if not isinstance(agent_options, dict):
             self._send_json(400, {"status": "error", "error": "agent_options must be an object"})
+            return
+
+        if not isinstance(ingest, bool):
+            self._send_json(400, {"status": "error", "error": "ingest must be a boolean"})
             return
 
         if relevance_profile is not None and not isinstance(relevance_profile, dict):
@@ -162,6 +168,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 min_sales = int(min_sales)
             if store_id is not None:
                 store_id = int(store_id)
+            if per_source_products is not None:
+                per_source_products = int(per_source_products)
         except (ValueError, TypeError) as exc:
             self._send_json(400, {"status": "error", "error": f"Invalid numeric parameter: {exc}"})
             return
@@ -185,6 +193,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 min_sales=min_sales,
                 browser_options=agent_options,
                 relevance_profile=relevance_profile,
+                ingest=ingest,
+                per_source_products=per_source_products,
             )
             report = agent.run()
         except Exception as exc:  # noqa: BLE001 - we want to return error to caller

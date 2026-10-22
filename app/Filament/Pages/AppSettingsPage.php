@@ -2,6 +2,7 @@
 
 namespace App\Filament\Pages;
 
+use App\Console\Commands\RunAgentStrategy;
 use App\Enums\AiFeature;
 use App\Enums\AiProvider;
 use App\Enums\Icons;
@@ -12,8 +13,11 @@ use App\Filament\Actions\Notifications\TestDiscordAction;
 use App\Filament\Actions\Notifications\TestGotifyAction;
 use App\Filament\Actions\Notifications\TestTelegramAction;
 use App\Filament\Traits\FormHelperTrait;
+use App\Models\Carousel;
 use App\Rules\ValidCron;
 use App\Services\AiService;
+use App\Services\Carousels\CarouselPrompts;
+use App\Services\Carousels\CarouselSettings;
 use App\Services\Helpers\CurrencyHelper;
 use App\Services\Helpers\IntegrationHelper;
 use App\Services\Helpers\LocaleHelper;
@@ -22,22 +26,32 @@ use App\Services\Intelligence\OfferMessage;
 use App\Services\OllamaService;
 use App\Settings\AppSettings;
 use Filament\Forms\Components\Actions\Action;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Group;
 use Filament\Forms\Components\Hidden;
+use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Tabs;
+use Filament\Forms\Components\TagsInput;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Forms\Form;
 use Filament\Forms\Get;
+use Filament\Forms\Set;
 use Filament\Notifications\Notification;
 use Filament\Pages\SettingsPage;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Once;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use RuntimeException;
 
 class AppSettingsPage extends SettingsPage
 {
@@ -131,6 +145,16 @@ class AppSettingsPage extends SettingsPage
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
+        // Blank weights use their default, so the check counts the defaults too.
+        $weightsTotal = collect(CarouselSettings::DEFAULT_WEIGHTS)
+            ->map(fn (int $default, string $criterion): float => (float) (is_numeric($weight = data_get($data, "carousel_settings.weights.{$criterion}")) ? $weight : $default))
+            ->sum();
+        if (abs($weightsTotal - 100) > 0.01) {
+            throw ValidationException::withMessages([
+                'data.carousel_settings.weights.visual_appeal' => "The scoring weights must add up to 100 (now {$weightsTotal}).",
+            ]);
+        }
+
         $existingProviders = collect(
             data_get(AppSettings::new()->toArray(), 'integrated_services.ai.providers', [])
         );
@@ -210,6 +234,12 @@ class AppSettingsPage extends SettingsPage
                         ->icon('heroicon-o-light-bulb')
                         ->schema([
                             $this->getIntelligenceSettings(),
+                        ]),
+
+                    Tabs\Tab::make('Carousels')
+                        ->icon('heroicon-o-rectangle-stack')
+                        ->schema([
+                            $this->getCarouselSettings(),
                         ]),
                 ]),
         ]);
@@ -455,6 +485,123 @@ class AppSettingsPage extends SettingsPage
                 ->afterStateHydrated(fn (\Filament\Forms\Components\Textarea $component, $state) => $component->state(filled($state) ? $state : OfferMessage::DEFAULT_PROMPT))
                 ->hintIcon(Icons::Help->value, 'Used by the AI provider to write the message when you publish. '.OfferMessage::PLACEHOLDER.' is replaced by the offer data.'),
         ])->statePath('intelligence_settings');
+    }
+
+    /**
+     * Read through CarouselSettings; blank fields fall back to its defaults.
+     */
+    protected function getCarouselSettings(): Group
+    {
+        $number = fn (string $name, string $label, string $help, int $placeholder): TextInput => TextInput::make($name)
+            ->label($label)
+            ->numeric()
+            ->minValue(0)
+            ->placeholder((string) $placeholder)
+            ->hintIcon(Icons::Help->value, $help);
+        $toggle = fn (string $name, string $label, string $help): Toggle => Toggle::make($name)
+            ->label($label)
+            ->afterStateHydrated(fn (Toggle $component, $state) => $component->state($state ?? true))
+            ->hintIcon(Icons::Help->value, $help);
+        $weights = CarouselSettings::DEFAULT_WEIGHTS;
+
+        return Group::make([
+            self::makeSettingsHeading('Niche suggestions', __('Pinterest Trends is not used: its API is restricted to approved partners and its data may not be stored. Suggestions come from the list below and from your tags.')),
+            Group::make([
+                TextInput::make('region')->label('Default region')->maxLength(8)->placeholder(CarouselSettings::DEFAULTS['region']),
+                TextInput::make('language')->label('Default language')->maxLength(16)->placeholder(CarouselSettings::DEFAULTS['language'])
+                    ->hintIcon(Icons::Help->value, 'Language of the editorial descriptions written for each product.'),
+                $toggle('suggestions_enabled', 'Show niche suggestions', 'Suggest the niches below and your tags when starting a carousel.'),
+                $toggle('custom_niche_enabled', 'Allow custom niches', 'Allow typing any niche, not only the suggested ones.'),
+            ])->columns(2),
+            TagsInput::make('suggested_niches')
+                ->label('Suggested niches')
+                ->afterStateHydrated(fn (TagsInput $component, $state) => $component->state(filled($state) ? $state : CarouselSettings::DEFAULT_NICHES))
+                ->hintIcon(Icons::Help->value, 'Each niche is also the search term sent to the marketplaces, so write it in the marketplaces\' language.'),
+
+            self::makeSettingsHeading('Product discovery', __('Stores are searched in turn; one that finds little never stops the others')),
+            Group::make([
+                Select::make('store_ids')
+                    ->label('Stores')
+                    ->multiple()
+                    ->options(fn (): array => RunAgentStrategy::eligibleStores()->pluck('name', 'id')->all())
+                    ->placeholder('All stores that support it')
+                    ->hintIcon(Icons::Help->value, 'API stores with discovery (e.g. Shopee) and agentic stores whose marketplace has a search page (Amazon, Mercado Livre).'),
+                $number('candidates_per_store', 'Target candidates per store', 'Qualified products wanted from each store. More are fetched internally to pick the best.', CarouselSettings::DEFAULTS['candidates_per_store'])->minValue(1)->maxValue(20),
+                $number('min_score', 'Minimum editorial score', 'Candidates below this score (0-100) are never pre-selected.', CarouselSettings::DEFAULTS['min_score'])->maxValue(100),
+                $toggle('filter_duplicates', 'Filter duplicates', 'Skip products whose title is nearly identical to one already found.'),
+                $toggle('require_image', 'Require a product image', 'Skip products without a usable image.'),
+            ])->columns(2),
+
+            self::makeSettingsHeading('Editorial scoring', __('Weights (%) of each criterion; they must add up to 100. The AI provider only reads titles, prices, ratings and sales counts, so image quality is not scored and its weight is spread over the other criteria.')),
+            Group::make(collect(CarouselSettings::CRITERIA_LABELS)->map(
+                fn (string $label, string $criterion): TextInput => $number($criterion, $label, "Weight of {$label} in the editorial score.", $weights[$criterion])->maxValue(100)
+            )->values()->all())
+                ->statePath('weights')
+                ->columns(3),
+
+            self::makeSettingsHeading('Carousel defaults', __('How many products a carousel is approved with')),
+            Group::make([
+                $number('min_products', 'Minimum products', 'Fewest products a carousel can be approved with.', CarouselSettings::DEFAULTS['min_products'])->minValue(1)->maxValue(Carousel::MAX_PRODUCT_SLOTS),
+                $number('max_products', 'Maximum products', 'Most products a carousel can be approved with.', CarouselSettings::DEFAULTS['max_products'])->minValue(1)->maxValue(Carousel::MAX_PRODUCT_SLOTS),
+                $number('suggested_products', 'Products pre-selected', 'How many of the best candidates are suggested.', CarouselSettings::DEFAULTS['suggested_products'])->minValue(1)->maxValue(Carousel::MAX_PRODUCT_SLOTS),
+                Placeholder::make('manual_approval')->label('Manual approval')->content('Always required'),
+            ])->columns(3),
+
+            self::makeSettingsHeading('Profiles', __('One per Instagram profile. Its style guide goes into the Canva AI prompt of every carousel, so they all look alike. Describe the style and/or attach a reference image, then generate the guide with the AI provider chosen for Carousel style (Settings > AI; a reference image needs a model that reads images).')),
+            Repeater::make('profiles')
+                ->hiddenLabel()
+                ->addActionLabel('Add profile')
+                ->collapsible()
+                ->collapsed()
+                ->itemLabel(fn (array $state): string => $state['name'] ?? 'Profile')
+                ->schema([
+                    Hidden::make('id')->default(fn (): string => (string) Str::ulid()),
+                    Group::make([
+                        TextInput::make('name')->required()->maxLength(80),
+                        TextInput::make('default_cta')->label('Default call to action')->maxLength(255)
+                            ->placeholder('e.g. Links na bio'),
+                    ])->columns(2),
+                    Group::make([
+                        Textarea::make('style_brief')
+                            ->label('Style description')
+                            ->rows(4)
+                            ->placeholder('e.g. Público masculino, visual escuro e sóbrio, preto e dourado, tipografia condensada, preço em destaque')
+                            ->hintIcon(Icons::Help->value, 'A few words about the look you want; used only to generate the style guide.'),
+                        FileUpload::make('reference_image')
+                            ->label('Reference image')
+                            ->image()
+                            ->disk('public')
+                            ->directory('carousels/profiles')
+                            ->maxSize(10240)
+                            ->hintIcon(Icons::Help->value, 'A post or design whose look you want; the AI describes its style, not its products.'),
+                    ])->columns(2),
+                    Textarea::make('style')
+                        ->label('Style guide')
+                        ->rows(8)
+                        ->hintIcon(Icons::Help->value, 'Pasted into the Canva AI prompt of every carousel of this profile. Edit it freely.')
+                        ->hintAction(Action::make('generateStyle')
+                            ->label('Generate with AI')
+                            ->icon('heroicon-m-sparkles')
+                            ->action(function (Get $get, Set $set): void {
+                                $image = collect((array) $get('reference_image'))->first();
+                                [$path, $mime] = match (true) {
+                                    $image instanceof TemporaryUploadedFile => [$image->getRealPath(), $image->getMimeType()],
+                                    is_string($image) && Storage::disk('public')->exists($image) => [Storage::disk('public')->path($image), Storage::disk('public')->mimeType($image) ?: null],
+                                    default => [null, null],
+                                };
+                                try {
+                                    $generated = CarouselPrompts::generateStyle((string) $get('style_brief'), $path, $mime);
+                                    $set('style', $generated['style']);
+                                    if (blank($get('style_brief'))) {
+                                        $set('style_brief', $generated['description']);
+                                    }
+                                    Notification::make()->title('Style guide generated')->body('Review it and save the settings.')->success()->send();
+                                } catch (RuntimeException $exception) {
+                                    Notification::make()->title($exception->getMessage())->danger()->send();
+                                }
+                            })),
+                ]),
+        ])->statePath('carousel_settings');
     }
 
     protected function getTelegramSettings(): Group

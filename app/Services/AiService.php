@@ -34,9 +34,10 @@ class AiService
      * Run a structured prompt through the given provider, or the active default.
      *
      * @param  Closure(JsonSchema): array<string, mixed>  $schema
+     * @param  array<int, \Laravel\Ai\Files\File>  $attachments  e.g. images for a model that can read them
      * @return array<string, mixed>|null
      */
-    public function structured(string $instructions, Closure $schema, string $prompt, ?AiProviderConfigDto $provider = null): ?array
+    public function structured(string $instructions, Closure $schema, string $prompt, ?AiProviderConfigDto $provider = null, array $attachments = []): ?array
     {
         $provider ??= IntegrationHelper::getActiveAiProvider();
 
@@ -44,7 +45,7 @@ class AiService
             return null;
         }
 
-        return $this->runStructuredFor($provider, $instructions, $schema, $prompt);
+        return $this->runStructuredFor($provider, $instructions, $schema, $prompt, $attachments);
     }
 
     /**
@@ -106,7 +107,7 @@ class AiService
      * @param  Closure(JsonSchema): array<string, mixed>  $schema
      * @return array<string, mixed>|null
      */
-    protected function runStructuredFor(AiProviderConfigDto $provider, string $instructions, Closure $schema, string $prompt): ?array
+    protected function runStructuredFor(AiProviderConfigDto $provider, string $instructions, Closure $schema, string $prompt, array $attachments = []): ?array
     {
         $this->configureProviderCredentials($provider);
 
@@ -120,6 +121,7 @@ class AiService
         try {
             $response = $agent->prompt(
                 $prompt,
+                $attachments,
                 provider: $provider->type->toLab(),
                 model: $provider->model,
                 timeout: $provider->timeoutSeconds,

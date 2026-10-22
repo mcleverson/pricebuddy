@@ -21,6 +21,11 @@ abstract class AbstractMarketplaceBrowserStrategy implements MarketplaceBrowserS
         return [];
     }
 
+    public function searchUrl(string $term): ?string
+    {
+        return null;
+    }
+
     public function detectBlockedResponse(array $errors, string $body, ?string $finalUrl = null): ?string
     {
         $signals = strtolower(implode(' ', array_map(

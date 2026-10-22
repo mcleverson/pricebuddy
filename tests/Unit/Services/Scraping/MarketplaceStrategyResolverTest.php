@@ -53,6 +53,8 @@ class MarketplaceStrategyResolverTest extends TestCase
             {
                 return null;
             }
+
+            public function searchUrl(string $term): ?string { return null; }
         };
 
         config()->set('scraping.marketplace_strategies', [$strategy]);

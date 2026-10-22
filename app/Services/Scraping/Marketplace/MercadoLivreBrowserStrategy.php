@@ -4,6 +4,7 @@ namespace App\Services\Scraping\Marketplace;
 
 use App\Models\Url;
 use DOMElement;
+use Illuminate\Support\Str;
 use Symfony\Component\DomCrawler\Crawler;
 
 class MercadoLivreBrowserStrategy extends AbstractMarketplaceBrowserStrategy
@@ -54,6 +55,13 @@ class MercadoLivreBrowserStrategy extends AbstractMarketplaceBrowserStrategy
             // Catalog (/p/MLB…, /up/MLBU…) and listing (MLB-…) product pages only.
             'product_url_patterns' => ['/p/MLB\d+', '/up/MLBU\d+', 'MLB-?\d{6,}'],
         ];
+    }
+
+    public function searchUrl(string $term): ?string
+    {
+        $slug = Str::slug($term);
+
+        return $slug === '' ? null : 'https://lista.mercadolivre.com.br/'.$slug;
     }
 
     public function extractListingImages(string $body): array

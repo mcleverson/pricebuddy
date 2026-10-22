@@ -1,4 +1,5 @@
 """Discovery counts persisted novelty and owns source/pagination progress."""
+import json
 import sys
 import time
 import unittest
@@ -19,6 +20,29 @@ from llm_client import LLMClientError, ToolCall
 
 def product(name):
     return {'url': f'https://example.com/{name}', 'title': name, 'price': '100.00', 'original_price': '200.00'}
+
+
+def with_link_ids(responses, url_texts):
+    """Mock LLM that writes collect_page answers by URL, as the tests read best,
+    and returns them the way the agent asks: the id of the observed link with
+    that URL's text. A URL the page never showed gets an id that does not exist."""
+    responses = iter(responses)
+
+    def respond(messages, *args, **kwargs):
+        call = next(responses)
+        if call.name != 'collect_page' or not isinstance(call.arguments.get('candidates'), list):
+            return call
+        ids = {link['text']: link['id'] for link in json.loads(messages[-1]['content'])['links']}
+        candidates = []
+        for item in call.arguments['candidates']:
+            if isinstance(item, dict) and 'url' in item:
+                url = item['url']
+                item = {key: value for key, value in item.items() if key != 'url'}
+                item['link_id'] = ids.get(url_texts.get(url, ''), 'L0')
+            candidates.append(item)
+        return ToolCall('collect_page', {**call.arguments, 'candidates': candidates})
+
+    return respond
 
 
 def snapshot(name, products):
@@ -124,12 +148,14 @@ class DiscoveryFlowTest(unittest.TestCase):
 
     def run_flow(self, pages, batches, known=(), min_products=2, advances=None, max_pages=15,
                  outcomes=None, metadata=None, sources=None, browser_options=None,
-                 known_without_images=(), listing_images=None):
+                 known_without_images=(), listing_images=None, ingest=True):
         llm = Mock()
-        llm.chat_completion.side_effect = [ToolCall('collect_page', {'candidates': b}) for b in batches]
+        url_texts = {link['url']: link['text'] for page in pages for link in page['links']}
+        llm.chat_completion.side_effect = with_link_ids(
+            [ToolCall('collect_page', {'candidates': b}) for b in batches], url_texts)
         agent = Agent('example', 'electronics', llm_client=llm, min_products=min_products,
                       starting_urls=sources or ['https://example.com/start'], allowed_hosts=['example.com'],
-                      max_pages=max_pages, browser_options=browser_options)
+                      max_pages=max_pages, browser_options=browser_options, ingest=ingest)
         browser, context, page = Mock(), Mock(), Mock()
         stored = set(known)
         missing_images = set(known_without_images)
@@ -177,6 +203,19 @@ class DiscoveryFlowTest(unittest.TestCase):
         self.assertEqual(enriched.call_count, 2)
         self.assertEqual(advance.call_count, 1)
         self.assertEqual(llm.chat_completion.call_count, 2)  # One call per page, not per product.
+
+    def test_collect_only_reports_candidates_without_sending_them(self):
+        old, new = product('old'), product('new')
+        report, sent, _, _, _ = self.run_flow(
+            [snapshot('page1', [old, new])], [[old, new]], known=[old['url']], ingest=False)
+
+        sent.assert_not_called()
+        # Products already in PriceBuddy are still candidates when nothing is ingested.
+        self.assertEqual([c['url'] for c in report['candidates']], [old['url'], new['url']])
+        self.assertEqual(report['candidates'][0]['price_value'], 100.0)
+        self.assertEqual(report['candidates'][0]['original_price_value'], 200.0)
+        self.assertEqual(report['pricebuddy_submission'], {'success': 0, 'existing': 0, 'failed': 0})
+        self.assertEqual(report['status'], 'completed')
 
     def test_second_run_skips_first_runs_results_and_finds_new_products(self):
         old, fresh = product('old'), product('fresh')

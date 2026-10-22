@@ -19,4 +19,9 @@ class AmazonBrowserStrategy extends AbstractMarketplaceBrowserStrategy
             'product_url_patterns' => ['/(?:dp|gp/product)/[A-Z0-9]{10}'],
         ];
     }
+
+    public function searchUrl(string $term): ?string
+    {
+        return 'https://www.amazon.com.br/s?k='.rawurlencode($term);
+    }
 }

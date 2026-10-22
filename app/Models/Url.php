@@ -456,7 +456,7 @@ class Url extends Model
      *
      * @return array{store: ?Store, scrape: array<string, mixed>, isUnavailable: bool}
      */
-    protected static function scrapeAndResolveStore(string $url, bool $createStore = true): array
+    public static function scrapeAndResolveStore(string $url, bool $createStore = true): array
     {
         $store = $createStore ? AutoCreateStore::createStoreFromUrl($url) : null;
         $store ??= ScrapeUrl::new($url)->getStore();

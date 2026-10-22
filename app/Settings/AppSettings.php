@@ -38,6 +38,12 @@ class AppSettings extends Settings
      */
     public array $intelligence_settings = [];
 
+    /**
+     * Settings > Carousels. Read through App\Services\Carousels\CarouselSettings,
+     * which applies the defaults for blank fields.
+     */
+    public array $carousel_settings = [];
+
     public static function new(): self
     {
         return resolve(static::class);
