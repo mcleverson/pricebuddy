@@ -473,6 +473,7 @@ class Agent:
         # Most new products taken from one starting URL, so several searches
         # (e.g. a carousel's search terms) share the run's target.
         self.per_source_products = per_source_products if per_source_products and per_source_products > 0 else None
+        self.source_start = 0
         # False only collects candidates into the report (carousel curation);
         # nothing is sent to PriceBuddy and known products are not skipped.
         self.ingest = ingest
@@ -659,7 +660,7 @@ class Agent:
                         if not self._can_continue() or len(self.created_candidates) >= self.target_candidates:
                             break
                         source = {"url": source_url, "state": "pending", "pages": []}
-                        source_start = len(self.created_candidates)
+                        source_start = self.source_start = len(self.created_candidates)
                         self.sources.append(source)
                         if pages >= self.max_pages:
                             self.abort_reason = "Listing page limit reached"
@@ -908,13 +909,21 @@ class Agent:
         logging.info("Product page coupon found: %s — %s", coupon["title"], url)
         return coupon
 
+    def _source_full(self) -> bool:
+        """A single listing page holds many variants of one product (e.g. 30 smart plugs
+        for one search); stop at the source's share so the other searches get theirs."""
+        return (
+            self.per_source_products is not None
+            and len(self.created_candidates) - self.source_start >= self.per_source_products
+        )
+
     def _collect_page(self, snapshot: dict, metadata_tools: BrowserToolSet) -> dict:
         """Read all text segments; never stop halfway through a page merely because the target was reached."""
         segments = self._build_llm_page_segments(snapshot)
         images = self._compact_observed_images(snapshot.get("images", []))
         next_page_text = None
         for segment_number, (segment, segment_links) in enumerate(segments, start=1):
-            if not self._can_continue():
+            if not self._can_continue() or self._source_full():
                 break
             # The LLM answers with short ids instead of copying URLs: marketplace
             # URLs carry long tracking parameters and dominated the output tokens.
@@ -1217,7 +1226,7 @@ class Agent:
             candidates_to_process = [c for c in candidates_to_process if id(c) not in rejected]
         # Preserve the LLM's ordering based only on visible demand/discount signals.
         for candidate in candidates_to_process:
-            if not self._can_continue():
+            if not self._can_continue() or self._source_full():
                 break
             metadata_tools.page.set_default_navigation_timeout(min(30000, self.remaining_seconds() * 1000))
             metadata_tools.candidates = [candidate]
