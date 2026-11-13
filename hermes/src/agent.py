@@ -641,6 +641,7 @@ class Agent:
                         BrowserGuard(self.allowed_hosts),
                         image_exclude_patterns=self.image_exclude_patterns,
                         offer_query_params=self.offer_query_params,
+                        product_url_patterns=self.product_url_patterns,
                     )
                     # Separate product tab preserves listing pagination/scroll state during enrichment.
                     metadata_page = context.new_page()
@@ -996,8 +997,9 @@ class Agent:
                     if not valid:
                         raise ValueError(reason)
                     batch.append(candidate)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as exc:
                     self.rejected_candidates += 1
+                    logging.info("Candidate rejected (%s): %s", exc, str(item.get("title"))[:80])
             # The lookup API accepts at most 100 URLs, independent of LLM compliance.
             for offset in range(0, len(batch), 100):
                 self._process_batch(
@@ -1090,6 +1092,12 @@ class Agent:
             text_segments.append(current)
 
         compacted_links = self._compact_observed_links(snapshot.get("links", []))
+        if self.product_url_patterns:
+            # Site menus repeat short labels found in every segment and would
+            # otherwise fill the per-segment link cap before any product link.
+            compacted_links.sort(key=lambda link: not any(
+                pattern.search(link["url"]) for pattern in self.product_url_patterns
+            ))
         result = []
         for segment in text_segments:
             segment_words = " ".join(segment.split())

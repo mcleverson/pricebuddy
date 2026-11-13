@@ -92,8 +92,10 @@ class BrowserToolSet:
         required_urls: list[str] | None = None,
         image_exclude_patterns: list[str] | None = None,
         offer_query_params: list[str] | None = None,
+        product_url_patterns: list[re.Pattern] | None = None,
     ) -> None:
         self.page = page
+        self.product_url_patterns = list(product_url_patterns or [])
         self.guard = guard
         self.candidate_validator = candidate_validator
         self.metadata_resolver = metadata_resolver
@@ -106,6 +108,8 @@ class BrowserToolSet:
         self.page_count = 0
         self.candidates: list[ProductCandidate] = []
         self.visited_urls: set[str] = set()
+        # Controls that looked like "next page" but did not paginate on the current page.
+        self.ignored_next_controls: set[str] = set()
 
     def validate_tool_name(self, name: str) -> None:
         """Raise if the tool name is not in the allowlist."""
@@ -127,8 +131,15 @@ class BrowserToolSet:
             
             response = self.page.goto(validated_url, wait_until="domcontentloaded")
             self.page.wait_for_timeout(2500)
+            try:
+                # Listings such as Amazon's deal grids render from XHR after the
+                # document loads; give them a bounded chance to arrive.
+                self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
             self.page_count += 1
             self.visited_urls.add(self._normalize_url(validated_url))
+            self.ignored_next_controls.clear()
             if isinstance(self.page.url, str):
                 self.visited_urls.add(self._normalize_url(self.page.url))
             
@@ -918,7 +929,7 @@ class BrowserToolSet:
         2. Number suggested by the LLM.
         3. Next sequential number inferred from the URL or the current page set.
         """
-        enabled = [c for c in controls if not c.get("disabled")]
+        enabled = [c for c in controls if not c.get("disabled") and c.get("text") not in self.ignored_next_controls]
 
         # 1. Textual pagination (regex match).
         control = next((c for c in enabled if self.NEXT_PAGE.fullmatch(c["text"].strip())), None)
@@ -994,6 +1005,19 @@ class BrowserToolSet:
                 observed = self._tool_inspect_page()
                 if not observed.success or self.fingerprint(observed.data) == before:
                     return BrowserToolResult(False, "Pagination did not change listing content", {"state": "stalled"})
+                previous_urls = {link.get("url") for link in snapshot.get("links", [])}
+                new_urls = [
+                    url for url in (link.get("url") or "" for link in observed.data.get("links", []))
+                    if url not in previous_urls
+                    and (not self.product_url_patterns
+                         or any(pattern.search(url) for pattern in self.product_url_patterns))
+                ]
+                if not new_urls:
+                    # e.g. a carousel arrow labelled "Next page": text changed, no new products.
+                    logger.info("Pagination click ('%s') brought no new links, falling back to scroll",
+                                next_control["text"])
+                    self.ignored_next_controls.add(next_control["text"])
+                    return self._try_scroll_for_more(self.fingerprint(observed.data), should_continue)
                 return BrowserToolResult(True, "Advanced via " + next_control["text"],
                                          {"state": "advanced", "snapshot": observed.data})
             # Click failed: the control may be a category expander or otherwise non-actionable.
