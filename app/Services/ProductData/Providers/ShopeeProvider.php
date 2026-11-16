@@ -11,6 +11,7 @@ use App\Services\ProductData\Providers\Shopee\ShopeeAffiliateClient;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Get;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Shopee Affiliate Open API (GraphQL). Fields/params confirmed against
@@ -192,32 +193,54 @@ class ShopeeProvider extends ConfiguredProvider
         $minRating = (float) ($context['min_rating'] ?? 0);
         $client = $this->client($store);
         $results = collect();
+        // The keyword search and the shop fan-out are independent sources: one
+        // failing (e.g. productOfferV2 with a keyword answering "10000 System
+        // Error" while shopOfferV2 works) must not drop the other's products.
+        // The error only propagates when no query of the run succeeded.
+        $succeeded = false;
+        $failure = null;
 
         foreach ($tags as $tag) {
             $keywords = $this->discoveryKeywords($store, $tag);
 
             foreach ($keywords as $keyword) {
-                $results = $results->merge($this->productsByKeyword($client, $store, $keyword, $tag, self::DISCOVERY_PRODUCTS_PER_KEYWORD, $minDiscountPercentage, $minSales, $minRating));
+                try {
+                    $results = $results->merge($this->productsByKeyword($client, $store, $keyword, $tag, self::DISCOVERY_PRODUCTS_PER_KEYWORD, $minDiscountPercentage, $minSales, $minRating));
+                    $succeeded = true;
+                } catch (ProductDataAccessException $exception) {
+                    $failure = $exception;
+                    Log::warning('Shopee discovery keyword search failed', ['tag' => $tag, 'keyword' => $keyword, 'error' => $exception->getMessage()]);
+                }
             }
 
-            foreach ($this->shopsByKeyword($client, $keywords[0]) as $shop) {
-                $shopId = data_get($shop, 'shopId');
+            try {
+                foreach ($this->shopsByKeyword($client, $keywords[0]) as $shop) {
+                    $succeeded = true;
+                    $shopId = data_get($shop, 'shopId');
 
-                if (! is_numeric($shopId)) {
-                    continue;
+                    if (! is_numeric($shopId)) {
+                        continue;
+                    }
+
+                    // Skip the fan-out entirely for shops that don't meet the
+                    // quality bar, rather than only filtering their products
+                    // after the fact — no point spending an extra query on them.
+                    if (! $this->meetsMinimumRating($shop, $minRating)) {
+                        continue;
+                    }
+
+                    $results = $results->merge(
+                        $this->productsByShop($client, $store, (int) $shopId, $tag, self::DISCOVERY_PRODUCTS_PER_SHOP, $minDiscountPercentage, $minSales, $minRating),
+                    );
                 }
-
-                // Skip the fan-out entirely for shops that don't meet the
-                // quality bar, rather than only filtering their products
-                // after the fact — no point spending an extra query on them.
-                if (! $this->meetsMinimumRating($shop, $minRating)) {
-                    continue;
-                }
-
-                $results = $results->merge(
-                    $this->productsByShop($client, $store, (int) $shopId, $tag, self::DISCOVERY_PRODUCTS_PER_SHOP, $minDiscountPercentage, $minSales, $minRating),
-                );
+            } catch (ProductDataAccessException $exception) {
+                $failure = $exception;
+                Log::warning('Shopee discovery shop search failed', ['tag' => $tag, 'keyword' => $keywords[0], 'error' => $exception->getMessage()]);
             }
+        }
+
+        if (! $succeeded && $failure !== null) {
+            throw $failure;
         }
 
         // Every candidate already comes from the sales / top-performance
