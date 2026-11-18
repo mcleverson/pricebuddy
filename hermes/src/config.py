@@ -16,6 +16,11 @@ LLM_MAX_OUTPUT_TOKENS = int(os.environ.get("HERMES_LLM_MAX_OUTPUT_TOKENS", "4096
 # Browser Configuration
 ALLOWED_HOSTS = os.environ.get("HERMES_ALLOWED_HOSTS", "")
 HTTP_PROXY = os.environ.get("HERMES_HTTP_PROXY", "")
+# Persistent state (e.g. marketplace block cooldowns). Defaults to the Firefox
+# profile directory because it is already a persistent Docker volume.
+STATE_DIR = os.environ.get(
+    "HERMES_STATE_DIR", os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes"),
+)
 
 # Hard Limits
 MAX_PAGES = int(os.environ.get("HERMES_MAX_PAGES", "15"))

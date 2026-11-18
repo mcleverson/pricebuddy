@@ -415,6 +415,58 @@ def send_candidates_to_pricebuddy(
     return result
 
 
+COOLDOWN_FILE_NAME = "hermes-block-cooldowns.json"
+
+
+def _format_epoch(value: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+
+
+def _cooldown_path() -> str:
+    return os.path.join(config.STATE_DIR, COOLDOWN_FILE_NAME)
+
+
+def _read_cooldowns() -> dict[str, dict[str, Any]]:
+    try:
+        with open(_cooldown_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        logging.warning("Could not read block cooldown state: %s", exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def active_block_cooldown(key: str, now: float | None = None) -> dict[str, Any] | None:
+    """Return the persisted cooldown for this marketplace while it is still active."""
+    entry = _read_cooldowns().get(key)
+    if not isinstance(entry, dict):
+        return None
+    until = entry.get("until")
+    if isinstance(until, bool) or not isinstance(until, (int, float)):
+        return None
+    return entry if until > (time.time() if now is None else now) else None
+
+
+def record_block_cooldown(key: str, seconds: int, reason: str, now: float | None = None) -> float:
+    """Persist a cooldown so later runs do not keep hitting a marketplace that just blocked us."""
+    started = time.time() if now is None else now
+    until = started + seconds
+    cooldowns = _read_cooldowns()
+    cooldowns[key] = {"until": until, "reason": reason[:300], "blocked_at": started}
+    path = _cooldown_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(cooldowns, handle, ensure_ascii=False)
+        os.replace(temporary, path)
+    except OSError as exc:
+        logging.warning("Could not persist block cooldown for %s: %s", key, exc)
+    return until
+
+
 def _clear_stale_browser_profile_locks(profile_dir: str) -> None:
     """Remove Chrome singleton links only when their socket is already gone."""
     socket_link = os.path.join(profile_dir, "SingletonSocket")
@@ -468,8 +520,12 @@ class Agent:
         relevance_profile: dict[str, Any] | None = None,
         ingest: bool = True,
         per_source_products: int | None = None,
+        marketplace_strategy: str | None = None,
     ) -> None:
         self.marketplace = marketplace
+        # Stores sharing one marketplace share its anti-bot reputation, so the
+        # cooldown is keyed by strategy (e.g. "mercado_livre"), not store name.
+        self.cooldown_key = marketplace_strategy or marketplace
         # Most new products taken from one starting URL, so several searches
         # (e.g. a carousel's search terms) share the run's target.
         self.per_source_products = per_source_products if per_source_products and per_source_products > 0 else None
@@ -510,6 +566,16 @@ class Agent:
         self.require_image = self.browser_options.get("require_image") is True
         self.listing_image_enrichment = self.browser_options.get("listing_image_enrichment") is True
         self.product_page_coupons = self.browser_options.get("product_page_coupons") is True
+        # Marketplaces that challenge product pages: never open them, rely on the listing only.
+        self.skip_product_page = self.browser_options.get("skip_product_page") is True
+        markers = self.browser_options.get("block_url_markers")
+        self.block_url_markers = [
+            m.lower() for m in markers if isinstance(m, str) and m.strip()
+        ] if isinstance(markers, list) else []
+        cooldown_seconds = self.browser_options.get("block_cooldown_seconds", 0)
+        if isinstance(cooldown_seconds, bool) or not isinstance(cooldown_seconds, int) or cooldown_seconds < 0:
+            cooldown_seconds = 0
+        self.block_cooldown_seconds = cooldown_seconds
         segment_chars = self.browser_options.get(
             "llm_page_segment_chars", config.LLM_PAGE_SEGMENT_CHARS,
         )
@@ -613,6 +679,19 @@ class Agent:
         try:
             if not self.starting_urls:
                 raise ValueError("At least one starting URL is required")
+            cooldown = (
+                active_block_cooldown(self.cooldown_key) if self.block_cooldown_seconds > 0 else None
+            )
+            if cooldown is not None:
+                # Do not touch the marketplace at all while it is cooling down:
+                # every extra hit after a block worsens the IP/profile reputation.
+                self.abort_reason = (
+                    f"Marketplace cooling down after a block until {_format_epoch(cooldown['until'])}"
+                    f" ({cooldown.get('reason', 'unknown')})"
+                )
+                self._record("block_cooldown_skip", until=_format_epoch(cooldown["until"]),
+                             reason=cooldown.get("reason"))
+                return self._build_report()
             # Check credentials and API availability before spending time on marketplace/LLM calls.
             logging.info("Discovery startup: checking PriceBuddy API")
             preflight_started = time.monotonic()
@@ -701,6 +780,10 @@ class Agent:
                         previous_snapshot = None
                         fingerprints = set()
                         while self._can_continue():
+                            block_signal = self._detect_block(snapshot)
+                            if block_signal:
+                                self._trip_block(source, block_signal)
+                                break
                             fingerprint = tools.fingerprint(snapshot)
                             if fingerprint in fingerprints:
                                 source.update(state="stalled", reason="Repeated listing content")
@@ -730,7 +813,7 @@ class Agent:
                                         continue
                                     source.update(state="blocked", reason=observation.message)
                                     break
-                                source.update(state="blocked", reason=page_result["blocked_reason"])
+                                self._trip_block(source, page_result["blocked_reason"])
                                 break
                             if not self._can_continue():
                                 source["state"] = "interrupted"
@@ -764,6 +847,31 @@ class Agent:
                 self.sources[-1].update(state="interrupted", reason=error)
             logging.exception("Discovery interrupted: %s", error)
         return self._build_report(error=error)
+
+    def _detect_block(self, snapshot: dict) -> str | None:
+        """Match strategy-provided block markers (e.g. challenge redirects) in the observed page."""
+        if not self.block_url_markers:
+            return None
+        urls = [snapshot.get("url") or ""] + [
+            link.get("url") or "" for link in snapshot.get("links", []) if isinstance(link, dict)
+        ]
+        for url in urls:
+            lowered = str(url).lower()
+            for marker in self.block_url_markers:
+                if marker in lowered:
+                    return f"block marker {marker} observed"
+        return None
+
+    def _trip_block(self, source: dict, reason: str) -> None:
+        """Mark the source blocked; with a configured cooldown, stop the run and persist it."""
+        source.update(state="blocked", reason=reason)
+        if self.block_cooldown_seconds <= 0:
+            return
+        until = record_block_cooldown(self.cooldown_key, self.block_cooldown_seconds, str(reason))
+        self.abort_reason = (
+            f"Marketplace block detected ({reason}); cooling down until {_format_epoch(until)}"
+        )
+        self._record("block_cooldown", reason=str(reason), until=_format_epoch(until))
 
     @staticmethod
     def _build_llm_snapshot(snapshot: dict, previous_snapshot: dict | None) -> dict:
@@ -1199,6 +1307,13 @@ class Agent:
                     "Structured listing image enrichment failed: %s",
                     config.redact_secrets(str(exc)),
                 )
+
+        if self.skip_product_page:
+            # The listing is the only source for these marketplaces. Marking
+            # candidates checked keeps validation but never navigates to the
+            # product page, whose challenge wall would only burn reputation.
+            for candidate in candidates:
+                candidate.metadata_checked = True
 
         matches = check_candidates_in_pricebuddy(
             [c.url for c in candidates], timeout=min(10, self.remaining_seconds()),
