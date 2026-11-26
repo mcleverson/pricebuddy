@@ -18,6 +18,12 @@ use Illuminate\Support\Facades\Http;
  */
 class ShopeeAffiliateClient
 {
+    /** GraphQL error code of the API's transient "System Error". */
+    protected const SYSTEM_ERROR_CODE = 10000;
+
+    /** Attempts per query when the API answers with SYSTEM_ERROR_CODE. */
+    protected const MAX_ATTEMPTS = 5;
+
     public function __construct(
         protected string $appId,
         protected string $secret,
@@ -29,6 +35,39 @@ class ShopeeAffiliateClient
      * @return array<string, mixed>
      */
     public function query(string $query, array $variables = []): array
+    {
+        // The API intermittently answers "error [10000]: System Error" to a query
+        // that succeeds when sent again later. The failures come in bursts (6 in a
+        // row seen on 2026-11-26), so only that case is retried, with a growing
+        // pause (2s, 4s, 6s, 8s) long enough to outlast a burst.
+        for ($attempt = 1; ; $attempt++) {
+            $json = $this->send($query, $variables);
+            $transient = collect((array) ($json['errors'] ?? []))
+                ->contains(fn (mixed $error): bool => (int) data_get($error, 'extensions.code') === self::SYSTEM_ERROR_CODE);
+
+            if (! $transient || $attempt >= self::MAX_ATTEMPTS) {
+                break;
+            }
+
+            sleep(2 * $attempt);
+        }
+
+        if (! empty($json['errors'])) {
+            throw new ProductDataAccessException(
+                'Shopee affiliate API returned errors: '.json_encode($json['errors'], JSON_UNESCAPED_UNICODE),
+            );
+        }
+
+        return (array) data_get($json, 'data', []);
+    }
+
+    /**
+     * One signed request (a fresh timestamp each time).
+     *
+     * @param  array<string, mixed>  $variables
+     * @return array<string, mixed>
+     */
+    protected function send(string $query, array $variables): array
     {
         $payload = json_encode(['query' => $query, 'variables' => $variables], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $timestamp = time();
@@ -49,14 +88,6 @@ class ShopeeAffiliateClient
             );
         }
 
-        $json = $response->json();
-
-        if (! empty($json['errors'])) {
-            throw new ProductDataAccessException(
-                'Shopee affiliate API returned errors: '.json_encode($json['errors'], JSON_UNESCAPED_UNICODE),
-            );
-        }
-
-        return (array) data_get($json, 'data', []);
+        return (array) $response->json();
     }
 }
