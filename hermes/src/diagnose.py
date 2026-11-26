@@ -40,15 +40,28 @@ def _parse_args(
         action="store_true",
         help="Keep the browser open after navigation until interrupted",
     )
+    parser.add_argument(
+        "--manual-unlock",
+        action="store_true",
+        help=(
+            "Open the persistent Hermes profile WITHOUT the Browser Guard, so a person "
+            "can solve a CAPTCHA by hand (it needs POST requests) and the cookies stay "
+            "in the profile. Requires --headed; never used by the agent."
+        ),
+    )
     parsed = parser.parse_args(arguments)
 
     if (parsed.url and parsed.url_option) or not (parsed.url or parsed.url_option):
+        return None
+    if parsed.manual_unlock and not parsed.headed:
+        # Only the headed run uses the persistent profile the agent reads.
         return None
     return (
         parsed.url_option or parsed.url,
         parsed.screenshot,
         parsed.headed,
         parsed.keep_open,
+        parsed.manual_unlock,
     )
 
 
@@ -126,46 +139,39 @@ def main() -> int:
         return int(exc.code)
     if parsed_args is None:
         print(
-            f"usage: {sys.argv[0]} [URL | --url URL] [--screenshot PATH] [--headed] [--keep-open]",
+            f"usage: {sys.argv[0]} [URL | --url URL] [--screenshot PATH] [--headed] [--keep-open]"
+            " [--manual-unlock (requires --headed)]",
             file=sys.stderr,
         )
         return 2
 
-    url, screenshot, headed, keep_open = parsed_args
+    url, screenshot, headed, keep_open, manual_unlock = parsed_args
     print(f"[DEBUG] url={url}, headed={headed}, keep_open={keep_open}", file=sys.stderr, flush=True)
     guard = BrowserGuard()
 
     try:
         from invisible_playwright import InvisiblePlaywright
-        with InvisiblePlaywright() as playwright:
+        # Launched like the agent (agent.py _invisible_playwright/_launch_browser):
+        # options go to InvisiblePlaywright itself and the user agent is not
+        # overridden, so cookies saved in the shared profile (e.g. a CAPTCHA
+        # solved by hand here) stay valid for discovery runs.
+        options = {"headless": not headed, "locale": "pt-BR", "timezone": "America/Sao_Paulo"}
+        proxy = _resolve_proxy()
+        if proxy:
+            options["proxy"] = {"server": proxy}
+        # Use the persistent profile only when headed (for cookie persistence)
+        if headed:
+            profile_dir = os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes")
+            os.makedirs(profile_dir, exist_ok=True)
+            options["profile_dir"] = profile_dir
+        with InvisiblePlaywright(**options) as launched:
             print("[DEBUG] InvisiblePlaywright started", file=sys.stderr, flush=True)
-            context_options = {
-                "user_agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
-                    "Gecko/20100101 Firefox/128.0"
-                ),
-                "locale": "pt-BR",
-                "timezone_id": "America/Sao_Paulo",
-                "viewport": {"width": 1900, "height": 1060},
-            }
-            proxy = _resolve_proxy()
-            if proxy:
-                context_options["proxy"] = {"server": proxy}
-            
-            # Use persistent context only when headed (for cookie persistence)
-            if headed:
-                profile_dir = os.path.expanduser("~/.mozilla/firefox/pricebuddy-hermes")
-                os.makedirs(profile_dir, exist_ok=True)
-                context = playwright.firefox.launch_persistent_context(
-                    profile_dir,
-                    headless=not headed,
-                    **context_options,
-                )
+            # A persistent profile yields the BrowserContext itself; otherwise a Browser.
+            if hasattr(launched, "new_context"):
+                context = launched.new_context(viewport={"width": 1900, "height": 1060})
             else:
-                # launch() only accepts headless — context args go to new_context()
-                browser = playwright.firefox.launch(headless=True)
-                context = browser.new_context(**context_options)
-            
+                context = launched
+
             print("[DEBUG] context created (invisible_playwright)", file=sys.stderr, flush=True)
             context.set_default_navigation_timeout(60000)
             context.set_default_timeout(30000)
@@ -203,24 +209,37 @@ def main() -> int:
                 page.on("request", record_document_request)
                 page.on("requestfailed", record_failed_request)
                 print(f"[DEBUG] About to call safe_navigate for: {url}", file=sys.stderr, flush=True)
-                print(f"Starting guarded navigation: {url}", file=sys.stderr, flush=True)
-                response = guard.safe_navigate(
-                    page,
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=60000,
-                )
+                if manual_unlock:
+                    # A person drives this session to solve a CAPTCHA, which posts
+                    # its answer; the read-only guard would block that.
+                    print(f"Starting UNGUARDED navigation (manual unlock): {url}", file=sys.stderr, flush=True)
+                    response = page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                else:
+                    print(f"Starting guarded navigation: {url}", file=sys.stderr, flush=True)
+                    response = guard.safe_navigate(
+                        page,
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
                 page.wait_for_timeout(2500)
                 print(f"Navigation reached: {page.url}", file=sys.stderr, flush=True)
                 if screenshot:
                     screenshot_path = Path(screenshot)
                     screenshot_path.parent.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(screenshot_path), full_page=True)
-                summary = _diagnostic_summary(
-                    page, response, guard, document_requests, failed_requests
-                )
-                summary["screenshot"] = str(screenshot_path) if screenshot else None
-                print(json.dumps(summary, indent=2))
+                try:
+                    summary = _diagnostic_summary(
+                        page, response, guard, document_requests, failed_requests
+                    )
+                    summary["screenshot"] = str(screenshot_path) if screenshot else None
+                    print(json.dumps(summary, indent=2))
+                except Exception as exc:
+                    # A page still loading or redirecting (e.g. after a CAPTCHA) must
+                    # not close the browser a person is about to use.
+                    if not keep_open:
+                        raise
+                    print(f"Could not summarise the page yet: {exc}", file=sys.stderr)
                 if keep_open:
                     print("Browser is open; press Ctrl-C to close.", file=sys.stderr)
                     try:
