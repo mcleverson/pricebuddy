@@ -125,6 +125,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         goal = body.get("goal")
         marketplace = body.get("marketplace")
+        marketplace_strategy = body.get("marketplace_strategy")
+        if not isinstance(marketplace_strategy, str) or not marketplace_strategy.strip():
+            marketplace_strategy = None
         urls = body.get("urls") or []
         tags = body.get("tags") or []
         allowed_hosts = body.get("allowed_hosts") or body.get("allowedHosts")
@@ -195,6 +198,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 relevance_profile=relevance_profile,
                 ingest=ingest,
                 per_source_products=per_source_products,
+                marketplace_strategy=marketplace_strategy,
             )
             report = agent.run()
         except Exception as exc:  # noqa: BLE001 - we want to return error to caller

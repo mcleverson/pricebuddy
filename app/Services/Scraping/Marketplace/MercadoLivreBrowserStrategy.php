@@ -54,6 +54,14 @@ class MercadoLivreBrowserStrategy extends AbstractMarketplaceBrowserStrategy
             'require_image' => true,
             // Catalog (/p/MLB…, /up/MLBU…) and listing (MLB-…) product pages only.
             'product_url_patterns' => ['/p/MLB\d+', '/up/MLBU\d+', 'MLB-?\d{6,}'],
+            // Product pages only reach the account-verification wall, and each
+            // challenged hit worsens the reputation of the IP and browser
+            // profile. Discovery relies on the listing alone.
+            'skip_product_page' => true,
+            // On the first challenge, stop the run and keep Hermes away from
+            // Mercado Livre for a while instead of hammering a blocked session.
+            'block_url_markers' => ['/gz/account-verification'],
+            'block_cooldown_seconds' => 6 * 60 * 60,
         ];
     }
 

@@ -1,6 +1,7 @@
 """Discovery counts persisted novelty and owns source/pagination progress."""
 import json
 import sys
+import tempfile
 import time
 import unittest
 from contextlib import ExitStack
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 # Mock invisible_playwright before importing agent (run() imports it lazily).
 sys.modules.setdefault('invisible_playwright', MagicMock())
 
+import agent as agent_module
 from agent import Agent, check_candidates_in_pricebuddy, send_candidates_to_pricebuddy
 from browser_tools import BrowserToolSet, BrowserToolResult, ProductCandidate
 from browser_guard import BrowserGuard
@@ -343,6 +345,109 @@ class DiscoveryFlowTest(unittest.TestCase):
         report = agent._build_report()
         self.assertEqual(report['status'], 'incomplete')
         self.assertEqual(len(report['candidates']), 1)
+
+
+class BlockAvoidanceTest(unittest.TestCase):
+    """Product-page skipping and the persistent block cooldown (Mercado Livre)."""
+
+    run_flow = DiscoveryFlowTest.run_flow
+
+    COOLDOWN_OPTIONS = {'block_url_markers': ['/gz/account-verification'], 'block_cooldown_seconds': 3600}
+
+    def setUp(self):
+        self.state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_dir.cleanup)
+        patcher = patch('agent.config.STATE_DIR', self.state_dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def cooldowns(self):
+        path = Path(self.state_dir.name) / agent_module.COOLDOWN_FILE_NAME
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def test_skip_product_page_never_opens_the_product_and_rejects_without_listing_image(self):
+        item = product('no-listing-image')
+        report, sent, _, enriched, _ = self.run_flow(
+            [snapshot('page1', [item])], [[item]], min_products=1,
+            browser_options={'skip_product_page': True, 'listing_image_enrichment': True,
+                             'require_image': True},
+        )
+        enriched.assert_not_called()
+        sent.assert_not_called()
+        self.assertEqual(report['rejected_candidates'], 1)
+
+    def test_skip_product_page_submits_listing_candidates_with_image(self):
+        item = product('with-listing-image')
+        image = 'https://http2.mlstatic.com/D_Q_NP_2X_123-MLA456-AB.webp'
+        report, sent, _, enriched, _ = self.run_flow(
+            [snapshot('page1', [item])], [[item]], min_products=1,
+            listing_images={item['url']: image},
+            browser_options={'skip_product_page': True, 'listing_image_enrichment': True,
+                             'require_image': True},
+        )
+        enriched.assert_not_called()
+        self.assertEqual(report['status'], 'completed')
+        self.assertEqual(sent.call_args.args[0][0].image_url, image)
+
+    def test_block_marker_stops_run_and_persists_cooldown(self):
+        blocked = {**snapshot('gz/account-verification?go=x', []), 'links': []}
+        urls = ['https://example.com/start', 'https://example.com/second']
+        report, _, advance, _, llm = self.run_flow(
+            [blocked, snapshot('page2', [product('never')])], [], sources=urls,
+            browser_options={**self.COOLDOWN_OPTIONS},
+        )
+        llm.chat_completion.assert_not_called()
+        advance.assert_not_called()
+        self.assertEqual(len(report['sources']), 1)
+        self.assertEqual(report['sources'][0]['state'], 'blocked')
+        self.assertIn('cooling down until', report['abort_reason'])
+        entry = self.cooldowns()['example']
+        self.assertGreater(entry['until'], time.time() + 3500)
+
+    def test_llm_blocked_reason_trips_cooldown_keyed_by_strategy(self):
+        llm = Mock()
+        llm.chat_completion.return_value = ToolCall('collect_page', {'candidates': [], 'blocked_reason': 'captcha'})
+        agent = Agent('Loja ML', 'electronics', llm_client=llm, starting_urls=['https://example.com/start'],
+                      allowed_hosts=['example.com'], browser_options={**self.COOLDOWN_OPTIONS},
+                      marketplace_strategy='mercado_livre')
+        with patch.object(agent, '_launch_browser', return_value=(Mock(), Mock(), Mock())), \
+             patch('agent.setup_signal_handlers'), \
+             patch('agent.check_candidates_in_pricebuddy', return_value=[]), \
+             patch.object(BrowserToolSet, '_tool_navigate', return_value=BrowserToolResult(True, 'ok')), \
+             patch.object(BrowserToolSet, '_tool_inspect_page',
+                          return_value=BrowserToolResult(True, 'ok', snapshot('page1', []))):
+            report = agent.run()
+        self.assertEqual(report['sources'][0]['reason'], 'captcha')
+        self.assertIn('mercado_livre', self.cooldowns())
+        self.assertNotIn('Loja ML', self.cooldowns())
+
+    def test_active_cooldown_skips_run_before_any_request(self):
+        agent_module.record_block_cooldown('mercado_livre', 3600, 'account_verification')
+        agent = Agent('Loja ML', 'electronics', starting_urls=['https://example.com/start'],
+                      browser_options={**self.COOLDOWN_OPTIONS}, marketplace_strategy='mercado_livre')
+        with patch('agent.check_candidates_in_pricebuddy') as lookup, \
+             patch.object(agent, '_launch_browser') as launch:
+            report = agent.run()
+        lookup.assert_not_called()
+        launch.assert_not_called()
+        self.assertEqual(report['status'], 'incomplete')
+        self.assertIn('cooling down', report['abort_reason'])
+
+    def test_expired_cooldown_does_not_block(self):
+        agent_module.record_block_cooldown('mercado_livre', 60, 'old block', now=time.time() - 120)
+        self.assertIsNone(agent_module.active_block_cooldown('mercado_livre'))
+
+    def test_marker_without_cooldown_only_blocks_the_source(self):
+        blocked = {**snapshot('gz/account-verification', []), 'links': []}
+        fresh = product('fresh')
+        urls = ['https://example.com/start', 'https://example.com/second']
+        report, _, _, _, _ = self.run_flow(
+            [blocked, snapshot('page2', [fresh])], [[fresh]], sources=urls, min_products=1,
+            browser_options={'block_url_markers': ['/gz/account-verification']},
+        )
+        self.assertEqual(report['sources'][0]['state'], 'blocked')
+        self.assertEqual(report['status'], 'completed')
+        self.assertEqual(self.cooldowns(), {})
 
 
 class SubmissionTest(unittest.TestCase):
